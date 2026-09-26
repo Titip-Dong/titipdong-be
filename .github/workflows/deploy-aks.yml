@@ -1,0 +1,76 @@
+name: Backend CI/CD to AKS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: titipdong-aks-production
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.24.2"
+  IMAGE_NAME: titipdong-api
+  KUBERNETES_NAMESPACE: titipdong
+  KUBERNETES_DEPLOYMENT: titipdong-api
+
+jobs:
+  test-build-deploy:
+    name: Test, build, and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Run backend tests
+        run: go test ./...
+
+      - name: Authenticate to Azure using OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign in to Azure Container Registry
+        run: az acr login --name "${{ vars.ACR_NAME }}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Linux AMD64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: ${{ vars.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Set AKS context
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          cluster-name: ${{ vars.AKS_CLUSTER_NAME }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Roll out image to AKS
+        run: |
+          kubectl set image "deployment/${KUBERNETES_DEPLOYMENT}" \
+            "api=${{ vars.ACR_LOGIN_SERVER }}/${IMAGE_NAME}:${{ github.sha }}" \
+            --namespace "${KUBERNETES_NAMESPACE}"
+          kubectl rollout status "deployment/${KUBERNETES_DEPLOYMENT}" \
+            --namespace "${KUBERNETES_NAMESPACE}" \
+            --timeout=5m
