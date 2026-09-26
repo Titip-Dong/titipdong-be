@@ -4,8 +4,13 @@ package httpserver
 
 import "github.com/gofiber/fiber/v2"
 
-// New creates the Fiber application. This foundation intentionally registers
-// no feature routes.
+// New creates the Fiber application and registers infrastructure endpoints.
 func New() *fiber.App {
-	return fiber.New()
+	app := fiber.New()
+
+	app.Get("/health", func(c *fiber.Ctx) error {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"status": "ok"})
+	})
+
+	return app
 }
