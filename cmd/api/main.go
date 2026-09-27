@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 
+	"github.com/Titip-Dong/titipdong-be/db/migrations"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/config"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
@@ -20,10 +21,15 @@ func main() {
 		log.Fatal(err)
 	}
 	defer pool.Close()
-	if err := database.Migrate(context.Background(), pool); err != nil {
+
+	if err := database.Migrate(context.Background(), pool, migrations.FS); err != nil {
 		log.Fatal(err)
 	}
-	app := httpserver.New(auth.New(pool, cfg.JWTSecret))
+
+	app, api := httpserver.New()
+	authService := auth.NewService(pool, cfg.JWTSecret)
+	api.UseMiddleware(auth.Middleware(api, authService))
+	auth.NewHandler(authService).RegisterRoutes(api)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }

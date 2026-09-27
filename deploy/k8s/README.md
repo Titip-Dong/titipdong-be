@@ -1,4 +1,4 @@
-# Deploy the API smoke test to AKS
+# Deploy the API to AKS
 
 This deployment creates two API pods in the `titipdong` namespace and an Azure public LoadBalancer service for prototype monitoring and smoke tests. The active image registry is `titipdongacr2026.azurecr.io`.
 
