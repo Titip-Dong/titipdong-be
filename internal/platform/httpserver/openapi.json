@@ -1,0 +1,71 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "TITIP DONG API",
+    "version": "0.1.0",
+    "description": "Prototype API with health and Auth & User endpoints. Auth uses PostgreSQL-backed accounts and 15-minute JWT access tokens; refresh tokens are not implemented."
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "AKS liveness and readiness endpoint",
+        "responses": {
+          "200": {
+            "description": "Healthy",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } }
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "operationId": "register",
+        "summary": "Register a buyer or jastiper account",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RegisterRequest" } } } },
+        "responses": {
+          "201": { "description": "Account created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthResponse" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "409": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "login",
+        "summary": "Obtain a short-lived access token",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LoginRequest" } } } },
+        "responses": {
+          "200": { "description": "Authenticated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AuthResponse" } } } },
+          "400": { "$ref": "#/components/responses/Problem" },
+          "401": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    },
+    "/me": {
+      "get": {
+        "operationId": "getCurrentUser",
+        "summary": "Return the authenticated user's profile",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": { "description": "Current user", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "401": { "$ref": "#/components/responses/Problem" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" } },
+    "responses": {
+      "Problem": { "description": "RFC 9457-style problem response", "content": { "application/problem+json": { "schema": { "$ref": "#/components/schemas/Problem" } } } }
+    },
+    "schemas": {
+      "Health": { "type": "object", "required": ["status"], "properties": { "status": { "type": "string", "example": "ok" } } },
+      "RegisterRequest": { "type": "object", "required": ["name", "email", "password", "role"], "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 100 }, "email": { "type": "string", "format": "email" }, "password": { "type": "string", "format": "password", "minLength": 8 }, "role": { "type": "string", "enum": ["buyer", "jastiper"] } } },
+      "LoginRequest": { "type": "object", "required": ["email", "password"], "properties": { "email": { "type": "string", "format": "email" }, "password": { "type": "string", "format": "password" } } },
+      "AuthResponse": { "type": "object", "required": ["accessToken", "user"], "properties": { "accessToken": { "type": "string" }, "user": { "$ref": "#/components/schemas/User" } } },
+      "User": { "type": "object", "required": ["id", "name", "email", "role", "createdAt"], "properties": { "id": { "type": "string", "format": "uuid" }, "name": { "type": "string" }, "email": { "type": "string", "format": "email" }, "role": { "type": "string", "enum": ["buyer", "jastiper", "admin"] }, "createdAt": { "type": "string", "format": "date-time" } } },
+      "Problem": { "type": "object", "required": ["type", "title", "status"], "properties": { "type": { "type": "string", "format": "uri-reference" }, "title": { "type": "string" }, "status": { "type": "integer" }, "detail": { "type": "string" }, "instance": { "type": "string" } } }
+    }
+  }
+}
