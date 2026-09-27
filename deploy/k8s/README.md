@@ -1,6 +1,8 @@
-# Deploy the API smoke test to AKS
+# Deploy the API to AKS
 
-This working smoke deployment creates two API pods in the `titipdong` namespace and an internal `ClusterIP` service. It deliberately does not create an Ingress or a public IP. The active image registry is `titipdongacr2026.azurecr.io`.
+These manifests create two API pods in the `titipdong` namespace and an internal `ClusterIP` service. There is no Ingress or public IP yet. The active image registry is `titipdongacr2026.azurecr.io`.
+
+> The Deployment does not yet pass `DATABASE_URL` and `JWT_SECRET`, which the API requires. See the infrastructure steps in [`docs/PLAN.md` section 6](../../docs/PLAN.md#6-delivery-pipeline-and-infrastructure).
 
 ## 1. Confirm the image registry
 
