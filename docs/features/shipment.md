@@ -99,7 +99,10 @@ tracking poll job.
 
 ## Sequence diagrams
 
-### Ship order
+<details>
+<summary><strong style="font-size:1.1em;">Ship order</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -131,7 +134,12 @@ end
 @enduml
 ```
 
-### Confirm receipt
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Confirm receipt</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -160,10 +168,25 @@ end
 @enduml
 ```
 
+</details>
+
 ## To do
 
-- [ ] Choose the tracking provider; define the `tracker` interface and a fake.
-- [ ] Migration `create_shipments` and queries.
-- [ ] Endpoints above; depends on F03 `MarkShipped`/`MarkDelivered` and F04 `Release`.
+MVP scope is defined in [README.md](README.md#mvp-scope).
+
+### MVP
+
+- [ ] Migration `create_shipments` and queries, **without** `proof_key`, `tracking_status`, and
+      `tracking_checked_at`.
+- [ ] `PUT /orders/{id}/shipment` (method `cod` or `courier` + courier code and tracking number) →
+      `order.MarkShipped`.
+- [ ] `GET /orders/{id}/shipment` (stored data only; the buyer checks the tracking number on the courier's site).
+- [ ] `POST /orders/{id}/confirm-receipt` → `order.MarkDelivered` → `payment.Release`, in one transaction.
+
+### Post-MVP
+
+- [ ] Choose the tracking provider; define the `tracker` interface and a fake; show tracking status in
+      `getShipment`.
 - [ ] Tracking poll job (courier shipments not yet delivered).
-- [ ] Blob SAS uploads for proof photos (`platform/blob`).
+- [ ] Proof photos through blob SAS uploads (`platform/blob`).
+- [ ] Schedule `payment.auto_release` when shipping (needs the worker).

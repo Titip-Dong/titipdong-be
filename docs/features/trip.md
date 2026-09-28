@@ -147,7 +147,10 @@ Lists use cursor pagination (`?limit=` default 20, max 100; `?cursor=`), respons
 
 ## Sequence diagrams
 
-### Create trip
+<details>
+<summary><strong style="font-size:1.1em;">Create trip</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -172,7 +175,12 @@ H --> FE : 201 trip
 @enduml
 ```
 
-### Browse trips (buyer)
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Browse trips (buyer)</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -196,7 +204,12 @@ H --> FE : 200 trip (capacity - reserved_capacity = remaining)
 @enduml
 ```
 
-### Reserve capacity (called by Order)
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Reserve capacity (called by Order)</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -218,12 +231,30 @@ end
 @enduml
 ```
 
+</details>
+
 ## To do
 
-- [ ] Decide the capacity unit (PLAN section 7, decision 4).
-- [ ] Migration `create_trips` (`trips`, `trip_items`) and queries in `db/queries/trips.sql`, `trip_items.sql`.
-- [ ] Repository, service (`Reserve`/`Release` under row lock), handler with the endpoints above.
+MVP scope is defined in [README.md](README.md#mvp-scope).
+
+### MVP
+
+- [ ] Migration `create_trips` (`trips` only, **without** `capacity` / `reserved_capacity`) and queries in
+      `db/queries/trips.sql`.
+- [ ] Repository, service, handler for `createTrip`, `listTrips` (city filter + cursor), `getTrip`, `listMyTrips`,
+      `closeTrip`.
 - [ ] Slug generation (from title + short random suffix), unique.
-- [ ] Auto-close when `request_deadline` passes (worker job or filter on read).
+- [ ] `Trip(ctx, id)` for Order to read jastiper, status, and deadline. No capacity: the jastiper closes the trip
+      manually when full.
+- [ ] Deadline handled on read: `listTrips` hides trips past `request_deadline`, and Order rejects requests on
+      `closed` trips or after the deadline (no job).
+- [ ] Service and handler tests.
+
+### Post-MVP
+
+- [ ] Decide the capacity unit (PLAN section 7, decision 4), add `capacity` / `reserved_capacity` (expand
+      migration), `Reserve`/`Release` under row lock, and an integration test for concurrent `Reserve`.
+- [ ] `PATCH /trips/{id}`.
+- [ ] Catalog: `trip_items` table and CRUD under `/trips/{id}/items`.
 - [ ] Catalog photos through blob SAS uploads (`uploads.purpose = 'trip_item_photo'`), depends on `platform/blob`.
-- [ ] Service tests (capacity edge cases), handler tests, integration test for concurrent `Reserve`.
+- [ ] Auto-close job when `request_deadline` passes (worker).

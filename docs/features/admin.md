@@ -146,7 +146,10 @@ Dispute endpoints (`/admin/disputes…`) are documented in [dispute.md](dispute.
 
 ## Sequence diagrams
 
-### Suspend a user
+<details>
+<summary><strong style="font-size:1.1em;">Suspend a user</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -177,7 +180,12 @@ end
 @enduml
 ```
 
-### Dashboard stats
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Dashboard stats</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -197,10 +205,23 @@ H --> Admin : 200 stats
 @enduml
 ```
 
+</details>
+
 ## To do
 
-- [ ] Depends on F01 account status (`users.status`, `auth.Service.SetStatus`) and `platform/audit`.
+MVP scope is defined in [README.md](README.md#mvp-scope). Admin accounts come from the F01 `create-admin` CLI.
+
+### MVP
+
+- [ ] Dispute endpoints (built in F06).
+- [ ] `GET /admin/transactions`: released orders with the jastiper's share and the platform fee, so an admin can pay
+      jastipers out manually, plus refunds waiting for a manual Midtrans refund. Cursor pagination.
+
+### Post-MVP
+
+- [ ] `GET /admin/stats`.
+- [ ] `GET /admin/users` and `PATCH /admin/users/{id}` (suspend/activate); depends on F01 account status
+      (`users.status`, `auth.Service.SetStatus`). Revoke the user's refresh tokens on suspension. In the MVP, an
+      admin suspends directly in the database.
+- [ ] `GET /admin/audit-logs`; depends on `platform/audit`.
 - [ ] Decide KYC scope (PLAN section 7, decision 2); the FE has `/admin/kyc`.
-- [ ] Read queries for stats, transactions, users, audit logs.
-- [ ] Endpoints above with cursor pagination.
-- [ ] Revoke the user's refresh tokens on suspension (once F01 refresh tokens exist).

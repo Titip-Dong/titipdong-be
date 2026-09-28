@@ -133,7 +133,10 @@ Indexes: `(user_id, created_at DESC)`, partial `(user_id) WHERE read_at IS NULL`
 
 ## Sequence diagrams
 
-### Notify from a business transaction
+<details>
+<summary><strong style="font-size:1.1em;">Notify from a business transaction</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -164,7 +167,12 @@ end
 @enduml
 ```
 
-### Read notifications
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Read notifications</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -188,11 +196,25 @@ end
 @enduml
 ```
 
+</details>
+
 ## To do
 
-- [ ] Platform: `cmd/worker` with River client, River migrations, `database.WithTx` (PLAN section 3).
-- [ ] Choose the email provider; define the `mailer` interface and a logging implementation.
-- [ ] Migration `create_notifications` (`notifications`, `outbound_emails`) and queries.
-- [ ] `Notify` + job worker + endpoints above.
-- [ ] Email templates (Indonesian copy, casual "kamu").
-- [ ] Add Mailpit to `compose.yaml`.
+MVP scope is defined in [README.md](README.md#mvp-scope). The MVP has no worker, so `Notify` inserts the in-app row
+directly on the caller's transaction instead of enqueueing a River job. The signature stays the same, so callers do
+not change when the worker arrives.
+
+### MVP
+
+- [ ] Migration `create_notifications` (`notifications` only) and queries.
+- [ ] `Notify(ctx, userID, event)` inserting the row on the transaction in `ctx` (`database.WithTx`).
+- [ ] `listNotifications`, `getUnreadCount`, `markAllNotificationsRead`. The FE polls the unread count.
+- [ ] Event types for the MVP flow: `order.requested`, `order.approved`, `order.rejected`, `order.cancelled`,
+      `payment.received`, `order.shipped`, `order.released`, `order.refunded`, `dispute.opened`, `dispute.resolved`.
+
+### Post-MVP
+
+- [ ] Platform: `cmd/worker` with River client and River migrations (PLAN section 3); move `Notify` to a River job.
+- [ ] Email: choose the provider, `mailer` interface with a logging implementation, `outbound_emails`, templates
+      (Indonesian copy, casual "kamu"), Mailpit in `compose.yaml`.
+- [ ] `markNotificationRead` for a single notification.

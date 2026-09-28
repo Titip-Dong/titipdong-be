@@ -153,7 +153,10 @@ expired, or its account no longer exists.
 
 ## Sequence diagrams
 
-### Register
+<details>
+<summary><strong style="font-size:1.1em;">Register</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -190,7 +193,12 @@ end
 @enduml
 ```
 
-### Login
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Login</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -222,7 +230,12 @@ end
 @enduml
 ```
 
-### Protected request (middleware)
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Protected request (middleware)</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -256,7 +269,12 @@ end
 @enduml
 ```
 
-### Refresh token rotation (planned)
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Refresh token rotation (planned)</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -290,11 +308,19 @@ end
 @enduml
 ```
 
+</details>
+
 ## To do
 
-Everything below is planned in [PLAN.md](../PLAN.md) section 4 (F01) and phase 1 of section 8.
+Planned in [PLAN.md](../PLAN.md) section 4 (F01) and phase 1 of section 8. MVP scope is defined in
+[README.md](README.md#mvp-scope).
 
-- [ ] **Refresh tokens.**
+### MVP
+
+- [x] Register, login, `GET /me`, `auth.Middleware`, `auth.Security`, `auth.PrincipalFrom`.
+- [ ] **Role naming.** Align `buyer`/`jastiper`/`admin` with the FE (`pembeli`, `roles` array) and decide whether
+      one user can be both buyer and jastiper (PLAN section 7, decision 3). Blocks every role check, so settle first.
+- [ ] **Refresh tokens.** Without them the FE logs out on every reload and every 15 minutes.
   - [ ] Migration for `refresh_tokens` (see table above) and queries in `db/queries/refresh_tokens.sql`.
   - [ ] Opaque random token (≥ 32 bytes) in an `HttpOnly; Secure; SameSite=Lax` cookie with `Path=/auth`; store only
         its SHA-256 hash.
@@ -303,17 +329,20 @@ Everything below is planned in [PLAN.md](../PLAN.md) section 4 (F01) and phase 1
   - [ ] `POST /auth/refresh` returns a new access token (the FE already calls it on app load).
   - [ ] `POST /auth/logout` revokes the family and clears the cookie; always answers 204.
   - [ ] `register` and `login` also set the refresh cookie.
-  - [ ] Periodic job that deletes rows past `expires_at` (needs the worker, see PLAN section 3).
   - [ ] CORS with `Allow-Credentials: true` and an origin allow-list (platform work; depends on the FE hosting
         decision, PLAN section 7 decision 6).
-- [ ] **Profile.** `PATCH /me` for name, phone, and password change (requires the current password). Blocked by the
-      KYC decision (PLAN section 7, decision 2).
-- [ ] **Account status.** Add `users.status` (`active`/`suspended`), `phone`, `updated_at` in an expand-only
-      migration. Login and refresh reject suspended users. Expose a service method (for example
-      `SetStatus(ctx, userID, status)`) that F08 Admin calls; admin never updates `users` directly.
-- [ ] **Admin provisioning.** `go run ./cmd/api create-admin` CLI command.
-- [ ] **Role naming.** Align `buyer`/`jastiper`/`admin` with the FE (`pembeli`, `roles` array) once PLAN section 7
-      decision 3 is made; may turn `users.role` into a `user_roles` table.
-- [ ] **Brute-force protection** on login/register (PLAN section 7, decision 7).
+- [ ] **Admin provisioning.** `go run ./cmd/api create-admin` CLI command (admins decide disputes in the MVP).
 - [ ] New users use UUIDv7 (`uuid.NewV7()`) per [DATABASE.md](../DATABASE.md) conventions; `Register` currently uses
       `uuid.New()` (v4).
+
+### Post-MVP
+
+- [ ] Periodic job that deletes `refresh_tokens` rows past `expires_at` (needs the worker, see PLAN section 3).
+- [ ] **Account status.** Add `users.status` (`active`/`suspended`), `phone`, `updated_at` in an expand-only
+      migration. Login and refresh reject suspended users. Expose a service method (for example
+      `SetStatus(ctx, userID, status)`) that F08 Admin calls; admin never updates `users` directly. Until then, an
+      admin suspends a user directly in the database.
+- [ ] **Profile.** `PATCH /me` for name, phone, and password change (requires the current password). Blocked by the
+      KYC decision (PLAN section 7, decision 2).
+- [ ] **Brute-force protection** on login/register (PLAN section 7, decision 7). For the MVP, rely on Ingress rate
+      limits.

@@ -183,7 +183,10 @@ Invalid transitions return `409 Conflict`.
 
 ## Sequence diagrams
 
-### Create order
+<details>
+<summary><strong style="font-size:1.1em;">Create order</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -214,7 +217,12 @@ H --> Pembeli : 201 order
 @enduml
 ```
 
-### Approve order
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Approve order</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -245,7 +253,12 @@ end
 @enduml
 ```
 
-### Expire unpaid order (job)
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Expire unpaid order (job)</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -267,12 +280,32 @@ end
 @enduml
 ```
 
+</details>
+
 ## To do
 
-- [ ] Decide payment deadline window (PLAN section 7, decision 5).
-- [ ] Platform prerequisites: `database.WithTx`, worker + River (PLAN section 3).
-- [ ] Migration `create_orders` (`orders`, `order_events`) and queries.
-- [ ] Transition table (from, to, allowed actor) and explicit methods listed above.
+MVP scope is defined in [README.md](README.md#mvp-scope).
+
+### MVP
+
+- [ ] Decide the payment deadline window, for example 24 hours after approval (PLAN section 7, decision 5).
+- [ ] Platform prerequisite: `database.WithTx` (PLAN section 3).
+- [ ] Migration `create_orders` (`orders`, `order_events`) and queries. `capacity_units` and `photo_key` are left out
+      (no trip capacity, no uploads in the MVP).
+- [ ] Full transition table (from, to, allowed actor) and all explicit methods listed above; this is the core of the
+      service and is not cut.
 - [ ] Order code generator (`TD-XXXXXX`, unique, retry on conflict).
-- [ ] `order.expire_unpaid` job.
-- [ ] Integration tests (testcontainers) for concurrent transitions and capacity release.
+- [ ] Endpoints `createOrder` (rejects `closed` trips and requests after the deadline), `listOrders` (buyer or
+      jastiper view by role), `getOrder` (with timeline), `approveOrder`, `rejectOrder`, `cancelOrder` (before
+      payment only).
+- [ ] Unpaid orders without a job: payment creation is refused after `payment_deadline`, and an `approved` order
+      past its deadline is cancelled when it is next read or acted on (`actor_type = system`).
+- [ ] Notifications in the same transaction through `notification.Notify` (in-app row, no River).
+- [ ] Integration tests (testcontainers) for concurrent transitions.
+
+### Post-MVP
+
+- [ ] Worker + River (PLAN section 3) and the `order.expire_unpaid` job, replacing the on-read cancellation.
+- [ ] Trip capacity: `capacity_units`, `trip.Reserve`/`Release` in the order transaction.
+- [ ] Product photo through blob SAS uploads.
+- [ ] `GET /me/trips/{id}/orders` jastiper inbox per trip (`GET /orders` covers it in the MVP).
