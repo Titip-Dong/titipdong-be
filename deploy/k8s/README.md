@@ -1,6 +1,6 @@
 # Deploy the API smoke test to AKS
 
-This working smoke deployment creates two API pods in the `titipdong` namespace and an internal `ClusterIP` service. It deliberately does not create an Ingress or a public IP. The active image registry is `titipdongacr2026.azurecr.io`.
+This deployment creates two API pods in the `titipdong` namespace and an Azure public LoadBalancer service for prototype monitoring and smoke tests. The active image registry is `titipdongacr2026.azurecr.io`.
 
 ## 1. Confirm the image registry
 
@@ -72,13 +72,13 @@ kubectl apply -f titipdong-be/deploy/k8s/service.yaml
 kubectl apply -f titipdong-be/deploy/k8s/deployment.yaml
 kubectl rollout status deployment/titipdong-api --namespace titipdong
 kubectl get pods --namespace titipdong --output wide
-kubectl port-forward service/titipdong-api 8080:8080 --namespace titipdong
+kubectl get service titipdong-api --namespace titipdong --watch
 ```
 
-In a second terminal:
+When `EXTERNAL-IP` is assigned, in a second terminal:
 
 ```bash
-curl http://localhost:8080/health
+curl http://<external-ip>/health
 ```
 
 Expected response:
@@ -90,3 +90,5 @@ Expected response:
 The two API pods must be on different nodes. The Deployment uses required pod anti-affinity to enforce that constraint. If either node is unavailable, the second pod remains pending rather than being scheduled alongside the first pod.
 
 The Deployment uses `maxSurge: 0` and `maxUnavailable: 1` during rolling updates. With only two nodes and required anti-affinity, this lets Kubernetes remove one old pod before scheduling its replacement; the default surge behavior would have no eligible node for a third pod.
+
+The LoadBalancer endpoint is HTTP only. It is suitable for local monitoring and prototype smoke tests, but Azure Static Web Apps is served over HTTPS and browsers block HTTPS-to-HTTP API calls. Configure an HTTPS Ingress and a DNS name before setting `VITE_API_URL` to this backend.

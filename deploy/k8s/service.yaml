@@ -7,10 +7,12 @@ metadata:
     app.kubernetes.io/name: titipdong-api
     app.kubernetes.io/part-of: titipdong
 spec:
-  type: ClusterIP
+  # Prototype public endpoint for local monitoring and smoke tests. Add HTTPS
+  # ingress before pointing the Azure Static Web App at this API.
+  type: LoadBalancer
   selector:
     app.kubernetes.io/name: titipdong-api
   ports:
     - name: http
-      port: 8080
+      port: 80
       targetPort: http
