@@ -26,7 +26,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	app, api := httpserver.New()
+	app, api := httpserver.New(cfg.CORSOrigins...)
 	authService := auth.NewService(pool, cfg.JWTSecret)
 	api.UseMiddleware(auth.Middleware(api, authService))
 	auth.NewHandler(authService).RegisterRoutes(api)
