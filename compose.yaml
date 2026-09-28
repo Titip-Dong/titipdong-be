@@ -1,13 +1,13 @@
-# Local development dependencies. The API itself runs on the host with `go run ./cmd/api`.
+# Local all-Docker development: PostgreSQL and the API run in containers.
 name: titipdong
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: titipdong
-      POSTGRES_PASSWORD: titipdong
-      POSTGRES_DB: titipdong
+      POSTGRES_USER: ${POSTGRES_USER:-titipdong}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-titipdong-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-titipdong}
     ports:
       # Override with POSTGRES_PORT=5433 if another PostgreSQL already uses 5432,
       # and update DATABASE_URL in .env.local to match.
@@ -19,6 +19,31 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  api:
+    build:
+      context: .
+    image: titipdong-api:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-titipdong}:${POSTGRES_PASSWORD:-titipdong-dev}@postgres:5432/${POSTGRES_DB:-titipdong}?sslmode=disable"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FILE: ""
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      PAYMENT_GATEWAY: ${PAYMENT_GATEWAY:-fake}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
 volumes:
   postgres-data:
