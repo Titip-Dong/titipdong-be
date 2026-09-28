@@ -12,7 +12,8 @@ type Config struct {
 	Port        string
 	CORSOrigins []string
 	// Browsers other than Chrome drop Secure cookies on http://localhost.
-	CookieSecure bool
+	CookieSecure   bool
+	PaymentGateway string
 }
 
 func Load() (Config, error) {
@@ -22,6 +23,13 @@ func Load() (Config, error) {
 		c.Port = "8080"
 	}
 	c.CookieSecure = os.Getenv("COOKIE_SECURE") != "false"
+	c.PaymentGateway = os.Getenv("PAYMENT_GATEWAY")
+	if c.PaymentGateway == "" {
+		c.PaymentGateway = "fake"
+	}
+	if c.PaymentGateway != "fake" {
+		return Config{}, fmt.Errorf("PAYMENT_GATEWAY %q is not supported yet; use fake", c.PaymentGateway)
+	}
 	origins := os.Getenv("CORS_ORIGINS")
 	if origins == "" {
 		origins = "http://localhost:5173"

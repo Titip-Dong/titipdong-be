@@ -8,6 +8,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
+	"github.com/Titip-Dong/titipdong-be/internal/payment"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/config"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/httpserver"
@@ -42,7 +43,10 @@ func main() {
 	auth.NewHandler(authService, cfg.CookieSecure).RegisterRoutes(api)
 	tripService := trip.NewService(pool)
 	trip.NewHandler(tripService).RegisterRoutes(api)
-	order.NewHandler(order.NewService(pool, tripService)).RegisterRoutes(api)
+	orderService := order.NewService(pool, tripService)
+	order.NewHandler(orderService).RegisterRoutes(api)
+	paymentService := payment.NewService(pool, orderService, payment.FakeGateway{})
+	payment.NewHandler(paymentService, cfg.PaymentGateway == "fake").RegisterRoutes(api)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }
