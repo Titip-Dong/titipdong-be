@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Local API development. Start the Go API on the host before using this target.
+  - job_name: titipdong-api-local
+    static_configs:
+      - targets: [host.docker.internal:8080]
+        labels:
+          environment: local
+          pod: local-api
