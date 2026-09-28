@@ -687,17 +687,17 @@ One row per order, created when the jastiper hands the item over.
 CREATE TABLE shipments (
     order_id            UUID PRIMARY KEY REFERENCES orders (id),
     method              TEXT NOT NULL CHECK (method IN ('cod', 'courier')),
-    courier_code        TEXT,                          -- e.g. jne, jnt, sicepat
-    tracking_number     TEXT,
-    handover_note       TEXT CHECK (char_length(handover_note) <= 1000),
-    proof_key           TEXT,                          -- photo of the handover or receipt
-    tracking_status     TEXT,                          -- last status from the tracking provider
-    tracking_checked_at TIMESTAMPTZ,
+    courier_code        TEXT NOT NULL DEFAULT '',      -- e.g. jne, jnt, sicepat
+    tracking_number     TEXT NOT NULL DEFAULT '',
+    handover_note       TEXT NOT NULL DEFAULT '' CHECK (char_length(handover_note) <= 1000),
+    proof_key           TEXT,                          -- post-MVP: photo of the handover or receipt
+    tracking_status     TEXT,                          -- post-MVP: last status from the tracking provider
+    tracking_checked_at TIMESTAMPTZ,                   -- post-MVP
     shipped_at          TIMESTAMPTZ NOT NULL,
     delivered_at        TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK (method = 'cod' OR (courier_code IS NOT NULL AND tracking_number IS NOT NULL))
+    CHECK (method = 'cod' OR (courier_code <> '' AND tracking_number <> ''))
 );
 CREATE INDEX shipments_tracking_poll_idx ON shipments (tracking_checked_at)
     WHERE method = 'courier' AND delivered_at IS NULL;

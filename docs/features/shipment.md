@@ -93,7 +93,7 @@ tracking poll job.
 
 | Method | Path                           | operationId        | Auth                   | Description                                         |
 | ------ | ------------------------------ | ------------------ | ---------------------- | --------------------------------------------------- |
-| `PUT`  | `/orders/{id}/shipment`        | `upsertShipment`   | `jastiper` (owner)     | Set method, courier, tracking, proof → `MarkShipped` |
+| `PUT`  | `/orders/{id}/shipment`        | `shipOrder`        | `jastiper` (owner)     | Set method, courier, tracking, proof → `MarkShipped` |
 | `GET`  | `/orders/{id}/shipment`        | `getShipment`      | order buyer/jastiper, admin | Shipment + latest tracking status             |
 | `POST` | `/orders/{id}/confirm-receipt` | `confirmReceipt`   | `buyer` (owner)        | `MarkDelivered` → `payment.Release`                 |
 
@@ -176,12 +176,12 @@ MVP scope is defined in [README.md](README.md#mvp-scope).
 
 ### MVP
 
-- [ ] Migration `create_shipments` and queries, **without** `proof_key`, `tracking_status`, and
+- [x] Migration `create_shipments` and queries, **without** `proof_key`, `tracking_status`, and
       `tracking_checked_at`.
-- [ ] `PUT /orders/{id}/shipment` (method `cod` or `courier` + courier code and tracking number) →
+- [x] `PUT /orders/{id}/shipment` (method `cod` or `courier` + courier code and tracking number) →
       `order.MarkShipped`.
-- [ ] `GET /orders/{id}/shipment` (stored data only; the buyer checks the tracking number on the courier's site).
-- [ ] `POST /orders/{id}/confirm-receipt` → `order.MarkDelivered` → `payment.Release`, in one transaction.
+- [x] `GET /orders/{id}/shipment` (stored data only; the buyer checks the tracking number on the courier's site).
+- [x] `POST /orders/{id}/confirm-receipt` → `order.MarkDelivered` → `payment.Release`, in one transaction.
 
 ### Post-MVP
 

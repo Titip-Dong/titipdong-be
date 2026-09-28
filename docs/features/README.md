@@ -10,7 +10,7 @@ migration and the generated OpenAPI spec (`/openapi.json`) are the source of tru
 | F02 | [Trip & Catalog](trip.md)           | Carlo  | MVP: create, list, get, close, my trips       |
 | F03 | [Order](order.md)                   | Alfian | MVP: state machine, request, approve/reject/cancel |
 | F04 | [Payment & Escrow](payment.md)      | Barru  | Prototype: fake gateway, ledger, release, wallet |
-| F05 | [Shipment](shipment.md)             | Alfian | Not started                                   |
+| F05 | [Shipment](shipment.md)             | Alfian | MVP: ship, get, confirm receipt → release     |
 | F06 | [Dispute](dispute.md)               | Barru  | Not started                                   |
 | F07 | [Notification](notification.md)     | Azfa   | Not started                                   |
 | F08 | [Admin](admin.md)                   | Azfa   | Not started                                   |

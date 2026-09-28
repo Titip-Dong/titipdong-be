@@ -12,6 +12,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/platform/config"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/httpserver"
+	"github.com/Titip-Dong/titipdong-be/internal/shipment"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
 )
 
@@ -47,6 +48,7 @@ func main() {
 	order.NewHandler(orderService).RegisterRoutes(api)
 	paymentService := payment.NewService(pool, orderService, payment.FakeGateway{})
 	payment.NewHandler(paymentService, cfg.PaymentGateway == "fake").RegisterRoutes(api)
+	shipment.NewHandler(shipment.NewService(pool, orderService, paymentService)).RegisterRoutes(api)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }
