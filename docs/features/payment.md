@@ -203,7 +203,10 @@ Important indexes: `payments_one_active_per_order` (partial unique on `order_id`
 
 ## Sequence diagrams
 
-### Checkout
+<details>
+<summary><strong style="font-size:1.1em;">Checkout</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -235,7 +238,12 @@ FE -> GW : open Snap popup, buyer pays
 @enduml
 ```
 
-### Payment callback (idempotent)
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Payment callback (idempotent)</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -275,7 +283,12 @@ end
 @enduml
 ```
 
-### Release to jastiper
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Release to jastiper</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -300,14 +313,35 @@ end
 @enduml
 ```
 
+</details>
+
 ## To do
 
-- [ ] Settle the escrow/disbursement arrangement with Midtrans and compliance points (PLAN section 7, decision 1).
-      Blocks payouts, not collection.
-- [ ] Decide the auto-release window (decision 5).
-- [ ] Migrations: payments, notifications, refunds, ledger tables with append-only and balance triggers, grants.
+MVP scope is defined in [README.md](README.md#mvp-scope). The money rules (double-entry ledger, idempotent
+callbacks, one transaction with an order row lock) are **not** cut for the MVP.
+
+### MVP
+
+- [ ] Midtrans sandbox account for development; before production, confirm that holding funds and paying jastipers
+      out manually is allowed (PLAN section 7, decision 1).
+- [ ] Migrations: `payments`, `payment_notifications`, `refunds`, the three ledger tables with append-only and
+      balance triggers, grants.
 - [ ] `gateway` interface, Midtrans adapter (Snap + notification signature), in-memory fake.
-- [ ] Callback handler, checkout, release, refund, wallet endpoints.
-- [ ] `payment.auto_release` job; reconciliation job for `pending` payments (Midtrans status API).
-- [ ] Payout accounts and payouts once decision 1 is made.
+- [ ] `POST /orders/{id}/payments` (refused after `payment_deadline`) and `POST /payments/callback`.
+- [ ] `Release(orderID)` with the 5% fee, called by Shipment on confirm receipt and by Dispute on a `release`
+      decision.
+- [ ] `Refund(orderID, reason)` from a dispute decision: ledger posting and a `refunds` row. The money goes back to
+      the buyer **manually through the Midtrans dashboard**; an admin then marks the refund `succeeded`.
+- [ ] `GET /wallet` for the jastiper's balance.
+- [ ] Manual payouts: an admin transfers to the jastiper outside the system, using the F08 transactions list.
 - [ ] Integration tests: duplicate callbacks, concurrent release/refund, ledger balance.
+
+### Post-MVP
+
+- [ ] Decide the auto-release window (decision 5) and add the `payment.auto_release` job (needs the worker). In the
+      MVP, a buyer who never confirms is handled by an admin through a dispute.
+- [ ] Refund through the Midtrans refund API instead of the dashboard.
+- [ ] Refund when the jastiper cancels after payment (`paid → refunded`); handled by admin/dispute in the MVP.
+- [ ] `payout_accounts`, `payouts`, and the `payout` ledger posting once decision 1 is made.
+- [ ] `GET /wallet/transactions`.
+- [ ] Reconciliation job for `pending` payments (Midtrans status API).

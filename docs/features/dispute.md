@@ -131,7 +131,10 @@ users ||--o{ dispute_messages : writes
 
 ## Sequence diagrams
 
-### Open dispute
+<details>
+<summary><strong style="font-size:1.1em;">Open dispute</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -163,7 +166,12 @@ end
 @enduml
 ```
 
-### Admin decision
+</details>
+
+<details>
+<summary><strong style="font-size:1.1em;">Admin decision</strong></summary>
+
+---
 
 ```plantuml
 @startuml
@@ -198,11 +206,23 @@ end
 @enduml
 ```
 
+</details>
+
 ## To do
 
-- [ ] Migration `create_disputes` (`disputes`, `dispute_evidence`) and queries.
-- [ ] Open / read / admin list / decision endpoints; depends on F03 and F04 service methods.
-- [ ] `platform/audit` writer.
-- [ ] Evidence uploads via `platform/blob`.
-- [ ] `dispute_messages` conversation (after initial release).
+MVP scope is defined in [README.md](README.md#mvp-scope).
+
+### MVP
+
+- [ ] Migration `create_disputes` (`disputes` only; category + text description) and queries.
+- [ ] `openDispute`, `getOrderDispute`, `listDisputes`, `getDispute`, `decideDispute`; depends on F03
+      (`MarkDisputed`, `ResolveDispute`) and F04 (`Refund`, `Release`).
+- [ ] Without auto-release, disputes are also how an admin releases funds when a buyer never confirms receipt.
+
+### Post-MVP
+
+- [ ] `dispute_evidence` with uploads via `platform/blob` (in the MVP, evidence is exchanged by chat or email).
+- [ ] `dispute_messages` conversation.
+- [ ] `platform/audit` writer for decisions (in the MVP, the trail is the dispute row, `order_events`, and the
+      ledger).
 - [ ] Decide whether partial refunds are needed (`FINANCE.md`).
