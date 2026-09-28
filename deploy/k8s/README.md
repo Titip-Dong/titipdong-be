@@ -89,6 +89,11 @@ Expected response:
 {"status":"ok"}
 ```
 
+For controlled monitoring, `/metrics` exposes Prometheus-format application and
+Go runtime metrics. It is not a readiness or liveness endpoint. The local
+Prometheus/Grafana setup and two-pod port-forward procedure are documented in
+`titipdong-docs/MONITORING_RUNBOOK.md`.
+
 The two API pods must be on different nodes. The Deployment uses required pod anti-affinity to enforce that constraint. If either node is unavailable, the second pod remains pending rather than being scheduled alongside the first pod.
 
 The Deployment uses `maxSurge: 0` and `maxUnavailable: 1` during rolling updates. With only two nodes and required anti-affinity, this lets Kubernetes remove one old pod before scheduling its replacement; the default surge behavior would have no eligible node for a third pod.
