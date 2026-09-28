@@ -17,6 +17,9 @@ import (
 )
 
 func init() {
+	// Handlers always return empty slices instead of nil, so arrays are never null.
+	huma.DefaultArrayNullable = false
+
 	// Huma copies the handler's error message into 5xx responses by default.
 	// Log it instead so SQL and other internal details never reach clients.
 	base := huma.NewErrorWithContext

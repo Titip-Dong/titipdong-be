@@ -77,7 +77,8 @@ func TestOrderFlow(t *testing.T) {
 	}
 
 	status, body = do(t, app, http.MethodGet, "/orders/"+id, "buyer", "")
-	if events, _ := body["events"].([]any); status != http.StatusOK || len(events) != 2 || body["code"] == nil {
+	order, _ := body["order"].(map[string]any)
+	if events, _ := body["events"].([]any); status != http.StatusOK || len(events) != 2 || order["code"] == nil {
 		t.Fatalf("get status = %d, body = %v", status, body)
 	}
 

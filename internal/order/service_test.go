@@ -52,14 +52,14 @@ func (r *fakeRepository) Lock(ctx context.Context, id uuid.UUID) (Order, error) 
 	return r.Order(ctx, id)
 }
 
-func (r *fakeRepository) List(_ context.Context, userID uuid.UUID, status Status, before pagination.Cursor, limit int) ([]Order, error) {
+func (r *fakeRepository) List(_ context.Context, userID uuid.UUID, status Status, tripID *uuid.UUID, before pagination.Cursor, limit int) ([]Order, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []Order
 	for _, o := range r.orders {
 		mine := o.BuyerID == userID || o.JastiperID == userID
 		earlier := o.CreatedAt.Before(before.At) || (o.CreatedAt.Equal(before.At) && o.ID.String() < before.ID.String())
-		if mine && earlier && (status == "" || o.Status == status) {
+		if mine && earlier && (status == "" || o.Status == status) && (tripID == nil || o.TripID == *tripID) {
 			out = append(out, o)
 		}
 	}

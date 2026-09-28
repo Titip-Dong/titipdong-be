@@ -20,7 +20,7 @@ type repository interface {
 	CreateOrder(ctx context.Context, o Order) error
 	Order(ctx context.Context, id uuid.UUID) (Order, error)
 	Lock(ctx context.Context, id uuid.UUID) (Order, error)
-	List(ctx context.Context, userID uuid.UUID, status Status, before pagination.Cursor, limit int) ([]Order, error)
+	List(ctx context.Context, userID uuid.UUID, status Status, tripID *uuid.UUID, before pagination.Cursor, limit int) ([]Order, error)
 	UpdateStatus(ctx context.Context, o Order) error
 	InsertEvent(ctx context.Context, orderID uuid.UUID, e Event) error
 	Events(ctx context.Context, orderID uuid.UUID) ([]Event, error)
@@ -79,10 +79,11 @@ func (r *pgRepository) Lock(ctx context.Context, id uuid.UUID) (Order, error) {
 	return toOrder(row.Order, row.TripSlug, row.TripTitle, row.BuyerName, row.JastiperName), nil
 }
 
-func (r *pgRepository) List(ctx context.Context, userID uuid.UUID, status Status, before pagination.Cursor, limit int) ([]Order, error) {
+func (r *pgRepository) List(ctx context.Context, userID uuid.UUID, status Status, tripID *uuid.UUID, before pagination.Cursor, limit int) ([]Order, error) {
 	rows, err := r.q(ctx).ListOrders(ctx, db.ListOrdersParams{
 		UserID:          userID,
 		Status:          string(status),
+		TripID:          tripID,
 		BeforeCreatedAt: before.At,
 		BeforeID:        before.ID,
 		RowLimit:        int32(limit),

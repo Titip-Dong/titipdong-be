@@ -142,7 +142,7 @@ type eventResponse struct {
 }
 
 type orderDetailResponse struct {
-	orderResponse
+	Order  orderResponse   `json:"order"`
 	Events []eventResponse `json:"events"`
 }
 
@@ -178,11 +178,20 @@ func (h *Handler) create(ctx context.Context, in *struct {
 
 func (h *Handler) list(ctx context.Context, in *struct {
 	Status string `query:"status" enum:"requested,approved,rejected,cancelled,paid,shipped,delivered,disputed,released,refunded"`
+	TripID string `query:"tripId" format:"uuid"`
 	Limit  int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
 	Cursor string `query:"cursor"`
 }) (*struct{ Body orderPage }, error) {
 	p, _ := auth.PrincipalFrom(ctx)
-	page, err := h.svc.List(ctx, p.UserID, ListParams{Status: Status(in.Status), Limit: in.Limit, Cursor: in.Cursor})
+	params := ListParams{Status: Status(in.Status), Limit: in.Limit, Cursor: in.Cursor}
+	if in.TripID != "" {
+		id, err := uuid.Parse(in.TripID)
+		if err != nil {
+			return nil, huma.Error422UnprocessableEntity("tripId must be a UUID.")
+		}
+		params.TripID = &id
+	}
+	page, err := h.svc.List(ctx, p.UserID, params)
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -199,7 +208,7 @@ func (h *Handler) get(ctx context.Context, in *idInput) (*struct{ Body orderDeta
 	if err != nil {
 		return nil, mapError(err)
 	}
-	body := orderDetailResponse{orderResponse: toOrderResponse(o), Events: make([]eventResponse, len(events))}
+	body := orderDetailResponse{Order: toOrderResponse(o), Events: make([]eventResponse, len(events))}
 	for i, e := range events {
 		body.Events[i] = eventResponse{
 			ToStatus:  string(e.ToStatus),
