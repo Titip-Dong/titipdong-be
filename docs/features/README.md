@@ -6,7 +6,7 @@ migration and the generated OpenAPI spec (`/openapi.json`) are the source of tru
 
 | ID  | Module                              | Owner  | Status                                        |
 | --- | ----------------------------------- | ------ | --------------------------------------------- |
-| F01 | [Auth & User](auth.md)              | Carlo  | Partial: register, login, `GET /me`, middleware |
+| F01 | [Auth & User](auth.md)              | Carlo  | Partial: register, login, refresh, logout, `GET /me`, middleware |
 | F02 | [Trip & Catalog](trip.md)           | Carlo  | Not started                                   |
 | F03 | [Order](order.md)                   | Alfian | Not started                                   |
 | F04 | [Payment & Escrow](payment.md)      | Barru  | Not started                                   |

@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"time"
 
@@ -56,4 +59,16 @@ func (t tokens) parse(raw string) (Principal, error) {
 		return Principal{}, ErrInvalidToken
 	}
 	return Principal{UserID: id, Role: c.Role}, nil
+}
+
+func newRefreshToken() (raw string, hash []byte) {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	raw = base64.RawURLEncoding.EncodeToString(b)
+	return raw, hashRefreshToken(raw)
+}
+
+func hashRefreshToken(raw string) []byte {
+	h := sha256.Sum256([]byte(raw))
+	return h[:]
 }

@@ -57,7 +57,7 @@ entity users {
   * updated_at : TIMESTAMPTZ
 }
 
-entity "refresh_tokens (to do)" as refresh_tokens {
+entity refresh_tokens {
   * id : UUID <<PK>>
   --
   * user_id : UUID <<FK>>
@@ -89,7 +89,7 @@ refresh_tokens |o--o| refresh_tokens : replaced_by
 | `phone`         | `TEXT`         | **To do.** ≤ 20 chars, nullable                              |
 | `updated_at`    | `TIMESTAMPTZ`  | **To do.** Set by the application                            |
 
-### `refresh_tokens` (to do)
+### `refresh_tokens`
 
 | Column        | Type          | Notes                                                          |
 | ------------- | ------------- | -------------------------------------------------------------- |
@@ -118,8 +118,8 @@ refresh_tokens |o--o| refresh_tokens : replaced_by
 | `POST`  | `/auth/register` | `register`       | Public          | Done    | Create a buyer or jastiper account, returns a session |
 | `POST`  | `/auth/login`    | `login`          | Public          | Done    | Returns an access token and the user           |
 | `GET`   | `/me`            | `getCurrentUser` | Any role        | Done    | Profile of the caller                          |
-| `POST`  | `/auth/refresh`  | `refreshSession` | Refresh cookie  | To do   | Rotate the refresh token, return a new access token |
-| `POST`  | `/auth/logout`   | `logout`         | Refresh cookie  | To do   | Revoke the refresh token family, clear the cookie |
+| `POST`  | `/auth/refresh`  | `refreshSession` | Refresh cookie  | Done    | Rotate the refresh token, return a new access token |
+| `POST`  | `/auth/logout`   | `logout`         | Refresh cookie  | Done    | Revoke the refresh token family, clear the cookie |
 | `PATCH` | `/me`            | `updateCurrentUser` | Any role     | To do   | Update name, phone, or password                |
 
 ### `POST /auth/register`

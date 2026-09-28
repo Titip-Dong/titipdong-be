@@ -14,13 +14,18 @@ import (
 // fakeRepository is an in-memory repository with the same error contract as
 // pgRepository.
 type fakeRepository struct {
-	mu    sync.Mutex
-	users map[uuid.UUID]newUser
-	now   time.Time
+	mu     sync.Mutex
+	users  map[uuid.UUID]newUser
+	tokens map[string]refreshToken
+	now    time.Time
 }
 
 func newFakeRepository() *fakeRepository {
-	return &fakeRepository{users: map[uuid.UUID]newUser{}, now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	return &fakeRepository{
+		users:  map[uuid.UUID]newUser{},
+		tokens: map[string]refreshToken{},
+		now:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	}
 }
 
 func (r *fakeRepository) CreateUser(_ context.Context, u newUser) (User, error) {
@@ -54,6 +59,62 @@ func (r *fakeRepository) UserByID(_ context.Context, id uuid.UUID) (User, error)
 		return User{}, ErrUserNotFound
 	}
 	return r.toUser(u), nil
+}
+
+func (r *fakeRepository) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	return fn(ctx)
+}
+
+func (r *fakeRepository) CreateRefreshToken(_ context.Context, t refreshToken, hash []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tokens[string(hash)] = t
+	return nil
+}
+
+func (r *fakeRepository) RefreshTokenByHash(_ context.Context, hash []byte) (refreshToken, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.tokens[string(hash)]
+	if !ok {
+		return refreshToken{}, ErrInvalidRefreshToken
+	}
+	return t, nil
+}
+
+func (r *fakeRepository) RotateRefreshToken(_ context.Context, oldID, _ uuid.UUID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for h, t := range r.tokens {
+		if t.ID == oldID {
+			t.RevokedAt = at
+			r.tokens[h] = t
+		}
+	}
+	return nil
+}
+
+func (r *fakeRepository) RevokeRefreshTokenFamily(_ context.Context, familyID uuid.UUID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for h, t := range r.tokens {
+		if t.FamilyID == familyID && t.RevokedAt.IsZero() {
+			t.RevokedAt = at
+			r.tokens[h] = t
+		}
+	}
+	return nil
+}
+
+func (r *fakeRepository) RefreshTokenFamilyActive(_ context.Context, familyID uuid.UUID) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range r.tokens {
+		if t.FamilyID == familyID && t.RevokedAt.IsZero() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *fakeRepository) toUser(u newUser) User {
@@ -160,4 +221,84 @@ func TestAuthenticateRejectsBadTokens(t *testing.T) {
 			t.Errorf("Authenticate() error = %v, want ErrInvalidToken", err)
 		}
 	})
+}
+
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time { return c.t }
+
+func TestRefreshRotatesToken(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	svc := newTestService(clock.now)
+	first, err := svc.Register(t.Context(), RegisterParams{Name: "Carlo", Email: "carlo@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	second, err := svc.Refresh(t.Context(), first.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+	if second.RefreshToken == first.RefreshToken || second.User.ID != first.User.ID {
+		t.Errorf("Refresh() = %+v, want a new token for the same user", second)
+	}
+
+	clock.t = clock.t.Add(refreshReuseGrace / 2)
+	if _, err := svc.Refresh(t.Context(), first.RefreshToken); err != nil {
+		t.Errorf("Refresh(old token within grace) error = %v, want nil", err)
+	}
+}
+
+func TestRefreshReuseRevokesFamily(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	svc := newTestService(clock.now)
+	first, err := svc.Register(t.Context(), RegisterParams{Name: "Carlo", Email: "carlo@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	second, err := svc.Refresh(t.Context(), first.RefreshToken)
+	if err != nil {
+		t.Fatalf("Refresh() error = %v", err)
+	}
+
+	clock.t = clock.t.Add(refreshReuseGrace + time.Second)
+	if _, err := svc.Refresh(t.Context(), first.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Fatalf("Refresh(reused token) error = %v, want ErrInvalidRefreshToken", err)
+	}
+	if _, err := svc.Refresh(t.Context(), second.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh(latest token after reuse) error = %v, want ErrInvalidRefreshToken", err)
+	}
+}
+
+func TestRefreshRejectsExpiredAndUnknown(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+	svc := newTestService(clock.now)
+	s, err := svc.Register(t.Context(), RegisterParams{Name: "Carlo", Email: "carlo@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if _, err := svc.Refresh(t.Context(), "unknown"); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh(unknown) error = %v, want ErrInvalidRefreshToken", err)
+	}
+	clock.t = clock.t.Add(refreshTokenLifetime)
+	if _, err := svc.Refresh(t.Context(), s.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh(expired) error = %v, want ErrInvalidRefreshToken", err)
+	}
+}
+
+func TestLogoutRevokesToken(t *testing.T) {
+	svc := newTestService(time.Now)
+	s, err := svc.Register(t.Context(), RegisterParams{Name: "Carlo", Email: "carlo@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := svc.Logout(t.Context(), s.RefreshToken); err != nil {
+		t.Fatalf("Logout() error = %v", err)
+	}
+	if _, err := svc.Refresh(t.Context(), s.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh(after logout) error = %v, want ErrInvalidRefreshToken", err)
+	}
+	if err := svc.Logout(t.Context(), "unknown"); err != nil {
+		t.Errorf("Logout(unknown) error = %v, want nil", err)
+	}
 }

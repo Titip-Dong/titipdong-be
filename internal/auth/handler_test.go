@@ -22,7 +22,7 @@ func newTestApp(t *testing.T) *fiber.App {
 	app, api := httpserver.New()
 	svc := newTestService(time.Now)
 	api.UseMiddleware(Middleware(api, svc))
-	NewHandler(svc).RegisterRoutes(api)
+	NewHandler(svc, false).RegisterRoutes(api)
 	huma.Register(api, huma.Operation{
 		OperationID: "adminProbe",
 		Method:      http.MethodGet,
@@ -113,5 +113,70 @@ func TestErrorResponses(t *testing.T) {
 				t.Errorf("body = %v, want an RFC 9457 problem", body)
 			}
 		})
+	}
+}
+
+func postWithCookie(t *testing.T, app *fiber.App, path string, cookie *http.Cookie, body string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	res, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = res.Body.Close() })
+	return res
+}
+
+func refreshCookieOf(t *testing.T, res *http.Response) *http.Cookie {
+	t.Helper()
+	for _, c := range res.Cookies() {
+		if c.Name == refreshCookieName {
+			return c
+		}
+	}
+	t.Fatalf("response has no %s cookie", refreshCookieName)
+	return nil
+}
+
+func TestRefreshCookieFlow(t *testing.T) {
+	app := newTestApp(t)
+
+	res := postWithCookie(t, app, "/auth/register", nil, `{"name":"Carlo","email":"carlo@example.com","password":"rahasia123","role":"buyer"}`)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register status = %d", res.StatusCode)
+	}
+	cookie := refreshCookieOf(t, res)
+	if !cookie.HttpOnly || cookie.Path != "/auth" || cookie.Value == "" {
+		t.Errorf("register cookie = %+v, want HttpOnly, Path=/auth, non-empty", cookie)
+	}
+
+	res = postWithCookie(t, app, "/auth/refresh", cookie, "")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("refresh status = %d", res.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if body["accessToken"] == "" || body["user"] == nil {
+		t.Errorf("refresh body = %v, want accessToken and user", body)
+	}
+	cookie = refreshCookieOf(t, res)
+
+	res = postWithCookie(t, app, "/auth/logout", cookie, "")
+	if res.StatusCode != http.StatusNoContent || refreshCookieOf(t, res).MaxAge >= 0 {
+		t.Fatalf("logout status = %d, want 204 and a cleared cookie", res.StatusCode)
+	}
+
+	res = postWithCookie(t, app, "/auth/refresh", cookie, "")
+	if res.StatusCode != http.StatusUnauthorized || refreshCookieOf(t, res).MaxAge >= 0 {
+		t.Errorf("refresh after logout status = %d, want 401 and a cleared cookie", res.StatusCode)
+	}
+
+	res = postWithCookie(t, app, "/auth/refresh", nil, "")
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("refresh without cookie status = %d, want 401", res.StatusCode)
 	}
 }

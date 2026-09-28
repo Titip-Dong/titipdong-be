@@ -41,6 +41,10 @@ db-shell: ## Open psql in the local PostgreSQL
 run: ## Run the API (reads .env.local, applies migrations on startup)
 	go run ./cmd/api
 
+.PHONY: seed
+seed: ## Create the demo accounts (idempotent)
+	go run ./cmd/api seed-demo
+
 .PHONY: build
 build: ## Build the API binary into bin/
 	go build -o bin/titipdong-api ./cmd/api
