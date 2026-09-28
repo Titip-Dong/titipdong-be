@@ -19,11 +19,11 @@ help: ## List available commands
 ## Local database (compose.yaml)
 
 .PHONY: db-up
-db-up: ## Start local PostgreSQL and wait until it is healthy
+db-up: ## Start local PostgreSQL and API containers, then wait until healthy
 	docker compose up -d --wait
 
 .PHONY: db-down
-db-down: ## Stop local PostgreSQL, keeping its data
+db-down: ## Stop local PostgreSQL and API containers, keeping database data
 	docker compose down
 
 .PHONY: db-reset
@@ -38,7 +38,7 @@ db-shell: ## Open psql in the local PostgreSQL
 ## Development
 
 .PHONY: run
-run: ## Run the API (reads .env.local, applies migrations on startup)
+run: ## Run the API on the host (reads .env, applies migrations on startup)
 	go run ./cmd/api
 
 .PHONY: seed

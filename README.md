@@ -17,29 +17,33 @@ Nothing else needs installing: `make` runs sqlc, goose, and golangci-lint at pin
 
 ## Run locally
 
-1. Start the local dependencies (PostgreSQL 16) defined in `compose.yaml`:
+1. Start the complete local application (PostgreSQL 16 and API) defined in `compose.yaml`:
 
    ```sh
-   make db-up      # waits until PostgreSQL is healthy
+   make db-up      # builds API and waits for PostgreSQL and API to be healthy
    ```
 
    If port 5432 is already taken (for example by a Homebrew PostgreSQL), run `POSTGRES_PORT=5433 make db-up` and use
    port 5433 in `DATABASE_URL`.
 
-2. Configure the environment. `.env.local` is git-ignored and read on startup; real environment variables take
+2. Configure the environment. `.env` is git-ignored and read on startup; real environment variables take
    precedence.
 
    ```sh
-   cp .env.example .env.local
+   cp .env.example .env
    # set JWT_SECRET to the output of: openssl rand -base64 32
    # DATABASE_URL already matches compose.yaml
    ```
 
-3. Run the API. Pending migrations are applied on startup.
+3. The API is already running in Docker at `http://localhost:8080`; pending
+   migrations are applied on startup. To follow its JSON logs:
 
    ```sh
-   make run        # http://localhost:8080
+   docker compose logs -f api
    ```
+
+   `make run` remains available only when you deliberately want to run the API
+   directly on the host.
 
 | Variable       | Required | Description                                  |
 | -------------- | -------- | -------------------------------------------- |
@@ -87,6 +91,24 @@ make test                                        # all unit tests (no database n
 go test ./internal/auth -run TestLogin -v        # a single test
 make check                                       # run before opening a PR
 ```
+
+## Local observability
+
+`/metrics` exposes Prometheus-format API and Go runtime metrics. The local
+Prometheus, Grafana, Loki, and Alloy configuration lives in `monitoring/`.
+
+```sh
+cd monitoring
+docker compose --env-file ../.env up -d
+```
+
+Open Grafana at `http://localhost:3000`. Its credentials and the local
+PostgreSQL Docker variables are documented in `.env.example`; keep real values
+only in the ignored `.env` file. When the API runs in Docker, Alloy collects
+its safe JSON logs directly from the container stdout. In Grafana, open the
+**TITIP DONG Prototype API** dashboard and use the **API request logs** panel
+(or Explore with Loki) to view them. `LOG_FILE=logs/api.jsonl` is only needed
+when running the API directly on the host.
 
 ## Project layout
 
