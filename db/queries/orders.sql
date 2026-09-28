@@ -27,6 +27,7 @@ JOIN users b ON b.id = o.buyer_id
 JOIN users j ON j.id = o.jastiper_id
 WHERE (o.buyer_id = sqlc.arg(user_id)::uuid OR o.jastiper_id = sqlc.arg(user_id)::uuid)
   AND (sqlc.arg(status)::text = '' OR o.status = sqlc.arg(status)::text)
+  AND (sqlc.narg(trip_id)::uuid IS NULL OR o.trip_id = sqlc.narg(trip_id)::uuid)
   AND (o.created_at, o.id) < (sqlc.arg(before_created_at)::timestamptz, sqlc.arg(before_id)::uuid)
 ORDER BY o.created_at DESC, o.id DESC
 LIMIT sqlc.arg(row_limit);

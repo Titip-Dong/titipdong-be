@@ -184,14 +184,16 @@ JOIN users b ON b.id = o.buyer_id
 JOIN users j ON j.id = o.jastiper_id
 WHERE (o.buyer_id = $1::uuid OR o.jastiper_id = $1::uuid)
   AND ($2::text = '' OR o.status = $2::text)
-  AND (o.created_at, o.id) < ($3::timestamptz, $4::uuid)
+  AND ($3::uuid IS NULL OR o.trip_id = $3::uuid)
+  AND (o.created_at, o.id) < ($4::timestamptz, $5::uuid)
 ORDER BY o.created_at DESC, o.id DESC
-LIMIT $5
+LIMIT $6
 `
 
 type ListOrdersParams struct {
 	UserID          uuid.UUID
 	Status          string
+	TripID          *uuid.UUID
 	BeforeCreatedAt time.Time
 	BeforeID        uuid.UUID
 	RowLimit        int32
@@ -209,6 +211,7 @@ func (q *Queries) ListOrders(ctx context.Context, arg ListOrdersParams) ([]ListO
 	rows, err := q.db.Query(ctx, listOrders,
 		arg.UserID,
 		arg.Status,
+		arg.TripID,
 		arg.BeforeCreatedAt,
 		arg.BeforeID,
 		arg.RowLimit,

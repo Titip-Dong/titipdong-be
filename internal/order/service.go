@@ -105,6 +105,7 @@ type CreateParams struct {
 
 type ListParams struct {
 	Status Status
+	TripID *uuid.UUID
 	Limit  int
 	Cursor string
 }
@@ -224,7 +225,7 @@ func (s *service) List(ctx context.Context, userID uuid.UUID, p ListParams) (Pag
 	if err := s.repo.ExpireUnpaid(ctx, s.now()); err != nil {
 		return Page{}, err
 	}
-	orders, err := s.repo.List(ctx, userID, p.Status, before, p.Limit+1)
+	orders, err := s.repo.List(ctx, userID, p.Status, p.TripID, before, p.Limit+1)
 	if err != nil {
 		return Page{}, err
 	}
