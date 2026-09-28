@@ -25,28 +25,314 @@ Related: endpoints and flows per feature in [`PLAN.md`](PLAN.md) section 4, open
 
 ## 2. Overview
 
-```mermaid
-erDiagram
-    users ||--o{ refresh_tokens : has
-    users ||--o{ trips : "opens (jastiper)"
-    trips ||--o{ trip_items : lists
-    trips ||--o{ orders : receives
-    users ||--o{ orders : "places (buyer)"
-    orders ||--o{ order_events : "status history"
-    orders ||--o{ payments : "paid by"
-    payments ||--o{ payment_notifications : receives
-    orders ||--o{ refunds : "refunded by"
-    orders ||--o| shipments : "handed over via"
-    orders ||--o| disputes : "disputed in"
-    disputes ||--o{ dispute_evidence : has
-    disputes ||--o{ dispute_messages : has
-    ledger_transactions ||--|{ ledger_entries : "balanced by"
-    ledger_accounts ||--o{ ledger_entries : posts
-    users ||--o{ payouts : "receives (jastiper)"
-    users ||--o{ notifications : receives
-    users ||--o{ outbound_emails : "is sent"
-    users ||--o{ uploads : owns
-    users ||--o{ audit_logs : "acts in"
+`*` marks a mandatory column, `<<PK>>` / `<<FK>>` keys, `<<UQ>>` unique. Timestamps other than `created_at` are
+left out to keep the diagram readable; the DDL in the sections below is complete.
+
+```plantuml
+@startuml
+hide circle
+skinparam linetype ortho
+skinparam packageStyle rectangle
+
+package "F01 Auth & User" {
+  entity users {
+    * id : UUID <<PK>>
+    --
+    * name : VARCHAR(100)
+    * email : TEXT <<UQ lower>>
+    * password_hash : TEXT
+    * role : VARCHAR(16)
+    * status : TEXT
+    phone : TEXT
+    * created_at : TIMESTAMPTZ
+  }
+  entity refresh_tokens {
+    * id : UUID <<PK>>
+    --
+    * user_id : UUID <<FK>>
+    * family_id : UUID
+    * token_hash : BYTEA <<UQ>>
+    * expires_at : TIMESTAMPTZ
+    revoked_at : TIMESTAMPTZ
+    replaced_by : UUID <<FK>>
+    user_agent : TEXT
+  }
+}
+
+package "F02 Trip & Catalog" {
+  entity trips {
+    * id : UUID <<PK>>
+    --
+    * jastiper_id : UUID <<FK>>
+    * slug : TEXT <<UQ>>
+    * title : TEXT
+    description : TEXT
+    * destination_city : TEXT
+    * destination_country : CHAR(2)
+    * departs_on : DATE
+    * returns_on : DATE
+    * request_deadline : TIMESTAMPTZ
+    * capacity : INTEGER
+    * reserved_capacity : INTEGER
+    * status : TEXT
+  }
+  entity trip_items {
+    * id : UUID <<PK>>
+    --
+    * trip_id : UUID <<FK>>
+    * name : TEXT
+    description : TEXT
+    photo_key : TEXT
+    reference_price : BIGINT
+    * position : INTEGER
+  }
+}
+
+package "F03 Order" {
+  entity orders {
+    * id : UUID <<PK>>
+    --
+    * code : TEXT <<UQ>>
+    * trip_id : UUID <<FK>>
+    * buyer_id : UUID <<FK>>
+    * jastiper_id : UUID <<FK>>
+    * product_name : TEXT
+    product_url : TEXT
+    photo_key : TEXT
+    * quantity : INTEGER
+    * capacity_units : INTEGER
+    notes : TEXT
+    item_price : BIGINT
+    jastip_fee : BIGINT
+    total : BIGINT
+    * status : TEXT
+    status_reason : TEXT
+    payment_deadline : TIMESTAMPTZ
+  }
+  entity order_events {
+    * id : BIGINT <<PK identity>>
+    --
+    * order_id : UUID <<FK>>
+    from_status : TEXT
+    * to_status : TEXT
+    actor_id : UUID <<FK>>
+    * actor_type : TEXT
+    reason : TEXT
+    * created_at : TIMESTAMPTZ
+  }
+}
+
+package "F04 Payment & Escrow" {
+  entity payments {
+    * id : UUID <<PK>>
+    --
+    * order_id : UUID <<FK>>
+    * amount : BIGINT
+    * provider : TEXT
+    provider_transaction_id : TEXT <<UQ>>
+    payment_type : TEXT
+    * status : TEXT
+    checkout_token : TEXT
+    * expires_at : TIMESTAMPTZ
+    paid_at : TIMESTAMPTZ
+  }
+  entity payment_notifications {
+    * id : BIGINT <<PK identity>>
+    --
+    * provider : TEXT
+    * provider_transaction_id : TEXT
+    * transaction_status : TEXT
+    payment_id : UUID <<FK>>
+    * signature_valid : BOOLEAN
+    * payload : JSONB
+    outcome : TEXT
+    * received_at : TIMESTAMPTZ
+  }
+  entity refunds {
+    * id : UUID <<PK>>
+    --
+    * order_id : UUID <<FK>>
+    * payment_id : UUID <<FK>>
+    * amount : BIGINT
+    * reason : TEXT
+    * status : TEXT
+    provider_refund_id : TEXT <<UQ>>
+  }
+  entity ledger_accounts {
+    * id : UUID <<PK>>
+    --
+    * kind : TEXT
+    user_id : UUID <<FK>>
+  }
+  entity ledger_transactions {
+    * id : UUID <<PK>>
+    --
+    * kind : TEXT
+    order_id : UUID <<FK>>
+    * idempotency_key : TEXT <<UQ>>
+    created_by : UUID <<FK>>
+  }
+  entity ledger_entries {
+    * id : BIGINT <<PK identity>>
+    --
+    * transaction_id : UUID <<FK>>
+    * account_id : UUID <<FK>>
+    order_id : UUID <<FK>>
+    * direction : TEXT
+    * amount : BIGINT
+  }
+  entity payout_accounts {
+    * id : UUID <<PK>>
+    --
+    * user_id : UUID <<FK, UQ>>
+    * bank_code : TEXT
+    * account_number : TEXT
+    * account_name : TEXT
+    verified_at : TIMESTAMPTZ
+  }
+  entity payouts {
+    * id : UUID <<PK>>
+    --
+    * jastiper_id : UUID <<FK>>
+    * payout_account_id : UUID <<FK>>
+    * amount : BIGINT
+    * status : TEXT
+    provider_ref : TEXT <<UQ>>
+  }
+}
+
+package "F05 Shipment" {
+  entity shipments {
+    * order_id : UUID <<PK, FK>>
+    --
+    * method : TEXT
+    courier_code : TEXT
+    tracking_number : TEXT
+    handover_note : TEXT
+    proof_key : TEXT
+    tracking_status : TEXT
+    * shipped_at : TIMESTAMPTZ
+    delivered_at : TIMESTAMPTZ
+  }
+}
+
+package "F06 Dispute" {
+  entity disputes {
+    * id : UUID <<PK>>
+    --
+    * order_id : UUID <<FK, UQ>>
+    * opened_by : UUID <<FK>>
+    * category : TEXT
+    * description : TEXT
+    * status : TEXT
+    decision : TEXT
+    decision_note : TEXT
+    decided_by : UUID <<FK>>
+    decided_at : TIMESTAMPTZ
+  }
+  entity dispute_evidence {
+    * id : UUID <<PK>>
+    --
+    * dispute_id : UUID <<FK>>
+    * uploaded_by : UUID <<FK>>
+    * file_key : TEXT
+    note : TEXT
+  }
+  entity dispute_messages {
+    * id : BIGINT <<PK identity>>
+    --
+    * dispute_id : UUID <<FK>>
+    * author_id : UUID <<FK>>
+    * body : TEXT
+  }
+}
+
+package "F07 Notification" {
+  entity notifications {
+    * id : UUID <<PK>>
+    --
+    * user_id : UUID <<FK>>
+    * type : TEXT
+    * data : JSONB
+    read_at : TIMESTAMPTZ
+  }
+  entity outbound_emails {
+    * id : UUID <<PK>>
+    --
+    user_id : UUID <<FK>>
+    * to_address : TEXT
+    * template : TEXT
+    * data : JSONB
+    * status : TEXT
+    provider_message_id : TEXT
+    last_error : TEXT
+    sent_at : TIMESTAMPTZ
+  }
+}
+
+package "Platform" {
+  entity audit_logs {
+    * id : BIGINT <<PK identity>>
+    --
+    actor_id : UUID <<FK>>
+    * actor_type : TEXT
+    * action : TEXT
+    * target_type : TEXT
+    * target_id : TEXT
+    * metadata : JSONB
+    request_id : TEXT
+  }
+  entity uploads {
+    * id : UUID <<PK>>
+    --
+    * owner_id : UUID <<FK>>
+    * purpose : TEXT
+    * object_key : TEXT <<UQ>>
+    * content_type : TEXT
+    size_bytes : BIGINT
+    * status : TEXT
+    attached_at : TIMESTAMPTZ
+  }
+}
+
+' F01
+users ||--o{ refresh_tokens : has
+refresh_tokens |o--o| refresh_tokens : replaced_by
+' F02
+users ||--o{ trips : "opens (jastiper)"
+trips ||--o{ trip_items : lists
+' F03
+trips ||--o{ orders : receives
+users ||--o{ orders : "places (buyer) / serves (jastiper)"
+orders ||--o{ order_events : "status history"
+users |o--o{ order_events : actor
+' F04
+orders ||--o{ payments : "paid by"
+payments |o--o{ payment_notifications : receives
+orders ||--o{ refunds : "refunded by"
+payments ||--o{ refunds : "refunded from"
+ledger_transactions ||--|{ ledger_entries : "balanced by"
+ledger_accounts ||--o{ ledger_entries : posts
+orders |o--o{ ledger_transactions : "for"
+orders |o--o{ ledger_entries : "escrow per order"
+users |o--o{ ledger_accounts : "owns (payable / refundable)"
+users ||--o| payout_accounts : has
+payout_accounts ||--o{ payouts : "paid to"
+users ||--o{ payouts : "receives (jastiper)"
+' F05
+orders ||--o| shipments : "handed over via"
+' F06
+orders ||--o| disputes : "disputed in"
+users ||--o{ disputes : "opens / decides"
+disputes ||--o{ dispute_evidence : has
+disputes ||--o{ dispute_messages : has
+' F07
+users ||--o{ notifications : receives
+users |o--o{ outbound_emails : "is sent"
+' Platform
+users ||--o{ uploads : owns
+users |o--o{ audit_logs : "acts in"
+@enduml
 ```
 
 | Module                | Tables                                                                                              |
