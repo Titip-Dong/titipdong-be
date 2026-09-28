@@ -528,12 +528,12 @@ CREATE TABLE payments (
     id                      UUID PRIMARY KEY,
     order_id                UUID NOT NULL REFERENCES orders (id),
     amount                  BIGINT NOT NULL CHECK (amount > 0),
-    provider                TEXT NOT NULL DEFAULT 'midtrans',
+    provider                TEXT NOT NULL,             -- 'fake' (prototype) or 'midtrans'
     provider_transaction_id TEXT UNIQUE,               -- Midtrans transaction_id, known after the first notification
-    payment_type            TEXT,                      -- e.g. bank_transfer, qris, gopay
     status                  TEXT NOT NULL DEFAULT 'pending'
                             CHECK (status IN ('pending', 'paid', 'failed', 'expired', 'cancelled')),
-    checkout_token          TEXT,                      -- Snap token for the frontend
+    checkout_token          TEXT NOT NULL DEFAULT '',  -- Snap token for the frontend
+    checkout_url            TEXT NOT NULL DEFAULT '',  -- Snap redirect URL
     expires_at              TIMESTAMPTZ NOT NULL,
     paid_at                 TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),

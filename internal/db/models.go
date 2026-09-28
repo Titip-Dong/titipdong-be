@@ -10,6 +10,32 @@ import (
 	"github.com/google/uuid"
 )
 
+type LedgerAccount struct {
+	ID        uuid.UUID
+	Kind      string
+	UserID    *uuid.UUID
+	CreatedAt time.Time
+}
+
+type LedgerEntry struct {
+	ID            int64
+	TransactionID uuid.UUID
+	AccountID     uuid.UUID
+	OrderID       *uuid.UUID
+	Direction     string
+	Amount        int64
+	CreatedAt     time.Time
+}
+
+type LedgerTransaction struct {
+	ID             uuid.UUID
+	Kind           string
+	OrderID        *uuid.UUID
+	IdempotencyKey string
+	CreatedBy      *uuid.UUID
+	CreatedAt      time.Time
+}
+
 type Order struct {
 	ID              uuid.UUID
 	Code            string
@@ -39,6 +65,21 @@ type OrderEvent struct {
 	ActorType  string
 	Reason     string
 	CreatedAt  time.Time
+}
+
+type Payment struct {
+	ID                    uuid.UUID
+	OrderID               uuid.UUID
+	Amount                int64
+	Provider              string
+	ProviderTransactionID *string
+	Status                string
+	CheckoutToken         string
+	CheckoutUrl           string
+	ExpiresAt             time.Time
+	PaidAt                *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type RefreshToken struct {
