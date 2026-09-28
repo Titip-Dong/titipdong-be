@@ -5,7 +5,7 @@
 | Owner   | Carlo           |
 | Package | `internal/trip` |
 | Tag     | `trip`          |
-| Status  | Not started     |
+| Status  | MVP done        |
 
 ## Overview
 
@@ -93,7 +93,7 @@ trips ||--o{ orders : "reserves capacity"
 | `jastiper_id`         | `UUID` FK     | → `users.id`                                         |
 | `slug`                | `TEXT`        | Unique, public URL                                   |
 | `title`               | `TEXT`        | ≤ 120 chars                                          |
-| `description`         | `TEXT`        | ≤ 2000 chars, nullable                               |
+| `description`         | `TEXT`        | ≤ 2000 chars, `NOT NULL DEFAULT ''`                  |
 | `destination_city`    | `TEXT`        |                                                      |
 | `destination_country` | `CHAR(2)`     | ISO 3166-1 alpha-2                                   |
 | `departs_on`          | `DATE`        |                                                      |
@@ -239,16 +239,16 @@ MVP scope is defined in [README.md](README.md#mvp-scope).
 
 ### MVP
 
-- [ ] Migration `create_trips` (`trips` only, **without** `capacity` / `reserved_capacity`) and queries in
+- [x] Migration `create_trips` (`trips` only, **without** `capacity` / `reserved_capacity`) and queries in
       `db/queries/trips.sql`.
-- [ ] Repository, service, handler for `createTrip`, `listTrips` (city filter + cursor), `getTrip`, `listMyTrips`,
+- [x] Repository, service, handler for `createTrip`, `listTrips` (city filter + cursor), `getTrip`, `listMyTrips`,
       `closeTrip`.
-- [ ] Slug generation (from title + short random suffix), unique.
-- [ ] `Trip(ctx, id)` for Order to read jastiper, status, and deadline. No capacity: the jastiper closes the trip
+- [x] Slug generation (from title + short random suffix), unique.
+- [x] `ByID(ctx, id)` / `BySlug` and `Trip.AcceptsRequests(now)` for Order to read jastiper, status, and deadline. No capacity: the jastiper closes the trip
       manually when full.
-- [ ] Deadline handled on read: `listTrips` hides trips past `request_deadline`, and Order rejects requests on
+- [x] Deadline handled on read: `listTrips` hides trips past `request_deadline`, and Order rejects requests on
       `closed` trips or after the deadline (no job).
-- [ ] Service and handler tests.
+- [x] Service and handler tests.
 
 ### Post-MVP
 

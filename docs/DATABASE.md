@@ -404,7 +404,7 @@ CREATE TABLE trips (
     jastiper_id         UUID NOT NULL REFERENCES users (id),
     slug                TEXT NOT NULL UNIQUE,          -- public URL: /trip/:slug
     title               TEXT NOT NULL CHECK (char_length(title) <= 120),
-    description         TEXT CHECK (char_length(description) <= 2000),
+    description         TEXT NOT NULL DEFAULT '' CHECK (char_length(description) <= 2000),
     destination_city    TEXT NOT NULL,
     destination_country CHAR(2) NOT NULL,              -- ISO 3166-1 alpha-2
     departs_on          DATE NOT NULL,

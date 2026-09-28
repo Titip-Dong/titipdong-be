@@ -23,6 +23,22 @@ type RefreshToken struct {
 	CreatedAt  time.Time
 }
 
+type Trip struct {
+	ID                 uuid.UUID
+	JastiperID         uuid.UUID
+	Slug               string
+	Title              string
+	Description        string
+	DestinationCity    string
+	DestinationCountry string
+	DepartsOn          time.Time
+	ReturnsOn          time.Time
+	RequestDeadline    time.Time
+	Status             string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
 type User struct {
 	ID           uuid.UUID
 	Name         string
