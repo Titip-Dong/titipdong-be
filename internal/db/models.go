@@ -94,6 +94,18 @@ type RefreshToken struct {
 	CreatedAt  time.Time
 }
 
+type Shipment struct {
+	OrderID        uuid.UUID
+	Method         string
+	CourierCode    string
+	TrackingNumber string
+	HandoverNote   string
+	ShippedAt      time.Time
+	DeliveredAt    *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type Trip struct {
 	ID                 uuid.UUID
 	JastiperID         uuid.UUID
