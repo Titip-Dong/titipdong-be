@@ -7,6 +7,7 @@ import (
 
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
+	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/config"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/httpserver"
@@ -39,7 +40,9 @@ func main() {
 	authService := auth.NewService(pool, cfg.JWTSecret)
 	api.UseMiddleware(auth.Middleware(api, authService))
 	auth.NewHandler(authService, cfg.CookieSecure).RegisterRoutes(api)
-	trip.NewHandler(trip.NewService(pool)).RegisterRoutes(api)
+	tripService := trip.NewService(pool)
+	trip.NewHandler(tripService).RegisterRoutes(api)
+	order.NewHandler(order.NewService(pool, tripService)).RegisterRoutes(api)
 
 	log.Fatal(app.Listen(":" + cfg.Port))
 }

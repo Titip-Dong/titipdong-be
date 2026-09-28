@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createRefreshToken = `-- name: CreateRefreshToken :exec
@@ -49,7 +48,7 @@ type GetRefreshTokenByHashForUpdateRow struct {
 	UserID    uuid.UUID
 	FamilyID  uuid.UUID
 	ExpiresAt time.Time
-	RevokedAt pgtype.Timestamptz
+	RevokedAt *time.Time
 }
 
 func (q *Queries) GetRefreshTokenByHashForUpdate(ctx context.Context, tokenHash []byte) (GetRefreshTokenByHashForUpdateRow, error) {

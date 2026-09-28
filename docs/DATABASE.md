@@ -460,11 +460,11 @@ CREATE TABLE orders (
     buyer_id         UUID NOT NULL REFERENCES users (id),
     jastiper_id      UUID NOT NULL REFERENCES users (id),  -- copied from the trip for access checks
     product_name     TEXT NOT NULL CHECK (char_length(product_name) <= 200),
-    product_url      TEXT CHECK (char_length(product_url) <= 2000),
+    product_url      TEXT NOT NULL DEFAULT '' CHECK (char_length(product_url) <= 2000),
     photo_key        TEXT,
     quantity         INTEGER NOT NULL CHECK (quantity > 0),
     capacity_units   INTEGER NOT NULL CHECK (capacity_units > 0),  -- trip capacity this order reserves
-    notes            TEXT CHECK (char_length(notes) <= 1000),
+    notes            TEXT NOT NULL DEFAULT '' CHECK (char_length(notes) <= 1000),
 
     -- Set when the jastiper approves. The buyer pays `total`.
     item_price       BIGINT CHECK (item_price >= 0),   -- per unit
@@ -474,7 +474,7 @@ CREATE TABLE orders (
     status           TEXT NOT NULL DEFAULT 'requested' CHECK (status IN (
                          'requested', 'approved', 'rejected', 'cancelled', 'paid', 'shipped',
                          'delivered', 'disputed', 'released', 'refunded')),
-    status_reason    TEXT,                             -- rejection or cancellation reason
+    status_reason    TEXT NOT NULL DEFAULT '',         -- rejection or cancellation reason
     payment_deadline TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -510,7 +510,7 @@ CREATE TABLE order_events (
     to_status   TEXT NOT NULL,
     actor_id    UUID REFERENCES users (id),            -- NULL when the system acted (job, gateway)
     actor_type  TEXT NOT NULL CHECK (actor_type IN ('buyer', 'jastiper', 'admin', 'system')),
-    reason      TEXT,
+    reason      TEXT NOT NULL DEFAULT '',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX order_events_order_idx ON order_events (order_id, id);

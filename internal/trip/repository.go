@@ -7,6 +7,7 @@ import (
 
 	"github.com/Titip-Dong/titipdong-be/internal/db"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,7 +17,7 @@ import (
 type openFilter struct {
 	Now   time.Time
 	City  string
-	After cursor
+	After pagination.Cursor
 	Limit int
 }
 
@@ -26,7 +27,7 @@ type repository interface {
 	TripByID(ctx context.Context, id uuid.UUID) (Trip, error)
 	TripBySlug(ctx context.Context, slug string) (Trip, error)
 	ListOpen(ctx context.Context, f openFilter) ([]Trip, error)
-	ListByJastiper(ctx context.Context, jastiperID uuid.UUID, before cursor, limit int) ([]Trip, error)
+	ListByJastiper(ctx context.Context, jastiperID uuid.UUID, before pagination.Cursor, limit int) ([]Trip, error)
 	// CloseTrip reports false when the trip was not open.
 	CloseTrip(ctx context.Context, id uuid.UUID) (bool, error)
 }
@@ -97,7 +98,7 @@ func (r *pgRepository) ListOpen(ctx context.Context, f openFilter) ([]Trip, erro
 	return trips, nil
 }
 
-func (r *pgRepository) ListByJastiper(ctx context.Context, jastiperID uuid.UUID, before cursor, limit int) ([]Trip, error) {
+func (r *pgRepository) ListByJastiper(ctx context.Context, jastiperID uuid.UUID, before pagination.Cursor, limit int) ([]Trip, error) {
 	rows, err := r.q(ctx).ListTripsByJastiper(ctx, db.ListTripsByJastiperParams{
 		JastiperID:      jastiperID,
 		BeforeCreatedAt: before.At,

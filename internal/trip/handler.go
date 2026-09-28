@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 )
@@ -189,6 +190,8 @@ func mapError(err error) error {
 	switch {
 	case errors.As(err, &inputErr):
 		return huma.Error422UnprocessableEntity(inputErr.Detail)
+	case errors.Is(err, pagination.ErrInvalidCursor):
+		return huma.Error422UnprocessableEntity("Cursor is invalid.")
 	case errors.Is(err, ErrNotFound):
 		return huma.Error404NotFound("Trip not found.")
 	case errors.Is(err, ErrNotOpen):

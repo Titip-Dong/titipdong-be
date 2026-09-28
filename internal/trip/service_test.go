@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/google/uuid"
 )
 
@@ -75,7 +76,7 @@ func (r *fakeRepository) ListOpen(_ context.Context, f openFilter) ([]Trip, erro
 	return out[:min(len(out), f.Limit)], nil
 }
 
-func (r *fakeRepository) ListByJastiper(_ context.Context, jastiperID uuid.UUID, before cursor, limit int) ([]Trip, error) {
+func (r *fakeRepository) ListByJastiper(_ context.Context, jastiperID uuid.UUID, before pagination.Cursor, limit int) ([]Trip, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []Trip
@@ -189,8 +190,8 @@ func TestListFiltersAndPaginates(t *testing.T) {
 		t.Error("pages are not ordered by departure date")
 	}
 
-	if _, err := svc.List(t.Context(), ListParams{Limit: 2, Cursor: "garbage"}); !errors.As(err, new(*InputError)) {
-		t.Errorf("List(bad cursor) error = %v, want *InputError", err)
+	if _, err := svc.List(t.Context(), ListParams{Limit: 2, Cursor: "garbage"}); !errors.Is(err, pagination.ErrInvalidCursor) {
+		t.Errorf("List(bad cursor) error = %v, want ErrInvalidCursor", err)
 	}
 }
 

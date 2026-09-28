@@ -114,13 +114,11 @@ func (r *pgRepository) RefreshTokenByHash(ctx context.Context, hash []byte) (ref
 	if err != nil {
 		return refreshToken{}, err
 	}
-	return refreshToken{
-		ID:        row.ID,
-		UserID:    row.UserID,
-		FamilyID:  row.FamilyID,
-		ExpiresAt: row.ExpiresAt,
-		RevokedAt: row.RevokedAt.Time,
-	}, nil
+	t := refreshToken{ID: row.ID, UserID: row.UserID, FamilyID: row.FamilyID, ExpiresAt: row.ExpiresAt}
+	if row.RevokedAt != nil {
+		t.RevokedAt = *row.RevokedAt
+	}
+	return t, nil
 }
 
 func (r *pgRepository) RotateRefreshToken(ctx context.Context, oldID, newID uuid.UUID, at time.Time) error {
