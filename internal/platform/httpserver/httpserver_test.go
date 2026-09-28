@@ -52,3 +52,28 @@ func TestOpenAPISpec(t *testing.T) {
 		t.Error("spec does not document /health")
 	}
 }
+
+func TestCORS(t *testing.T) {
+	app, _ := New("http://localhost:5173")
+	for _, tc := range []struct {
+		origin, want string
+	}{
+		{"http://localhost:5173", "http://localhost:5173"},
+		{"https://evil.example", ""},
+	} {
+		req := httptest.NewRequest(http.MethodOptions, "/health", nil)
+		req.Header.Set("Origin", tc.origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		res, err := app.Test(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		_ = res.Body.Close()
+		if got := res.Header.Get("Access-Control-Allow-Origin"); got != tc.want {
+			t.Errorf("origin %s: Allow-Origin = %q, want %q", tc.origin, got, tc.want)
+		}
+		if tc.want != "" && res.Header.Get("Access-Control-Allow-Credentials") != "true" {
+			t.Errorf("origin %s: Allow-Credentials not set", tc.origin)
+		}
+	}
+}

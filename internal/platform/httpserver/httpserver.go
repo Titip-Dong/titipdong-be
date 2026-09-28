@@ -8,10 +8,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 )
 
 func init() {
@@ -39,8 +41,14 @@ type healthStatus struct {
 
 // New creates the Fiber app and its Huma API with infrastructure endpoints
 // registered.
-func New() (*fiber.App, huma.API) {
+func New(corsOrigins ...string) (*fiber.App, huma.API) {
 	app := fiber.New()
+	if len(corsOrigins) > 0 {
+		app.Use(cors.New(cors.Config{
+			AllowOrigins:     strings.Join(corsOrigins, ","),
+			AllowCredentials: true,
+		}))
+	}
 
 	config := huma.DefaultConfig("TITIP DONG API", "1.0.0")
 	// Drop the default $schema link transformer so response bodies match the
