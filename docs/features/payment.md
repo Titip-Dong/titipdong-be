@@ -326,15 +326,24 @@ callbacks, one transaction with an order row lock) are **not** cut for the MVP.
       out manually is allowed (PLAN section 7, decision 1).
 - [ ] Migrations: `payments`, `payment_notifications`, `refunds`, the three ledger tables with append-only and
       balance triggers, grants.
+  - [x] `payments` and the three ledger tables with append-only and balance triggers.
+  - [ ] `payment_notifications`, `refunds`, grants.
 - [ ] `gateway` interface, Midtrans adapter (Snap + notification signature), in-memory fake.
+  - [x] `Gateway` interface and fake gateway (`PAYMENT_GATEWAY=fake`).
+  - [ ] Midtrans Snap adapter and notification signature check (deferred for the demo).
 - [ ] `POST /orders/{id}/payments` (refused after `payment_deadline`) and `POST /payments/callback`.
-- [ ] `Release(orderID)` with the 5% fee, called by Shipment on confirm receipt and by Dispute on a `release`
-      decision.
+  - [x] `POST /orders/{id}/payments`, refused after `payment_deadline`.
+  - [x] `POST /payments/{id}/simulate` (fake mode only), settling through the same path the callback will use.
+  - [ ] `POST /payments/callback`.
+- [x] `Release(orderID)` with the 5% fee, called by Shipment on confirm receipt and by Dispute on a `release`
+      decision. Shipment calls it; the Dispute call comes with F06.
 - [ ] `Refund(orderID, reason)` from a dispute decision: ledger posting and a `refunds` row. The money goes back to
       the buyer **manually through the Midtrans dashboard**; an admin then marks the refund `succeeded`.
-- [ ] `GET /wallet` for the jastiper's balance.
+- [x] `GET /wallet` for the jastiper's balance.
 - [ ] Manual payouts: an admin transfers to the jastiper outside the system, using the F08 transactions list.
 - [ ] Integration tests: duplicate callbacks, concurrent release/refund, ledger balance.
+  - [x] Ledger balance, checkout after the deadline, and the payment → release flow (`integration_test.go`).
+  - [ ] Duplicate callbacks and concurrent release/refund.
 
 ### Post-MVP
 

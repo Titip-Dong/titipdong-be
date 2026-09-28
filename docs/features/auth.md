@@ -318,20 +318,22 @@ Planned in [PLAN.md](../PLAN.md) section 4 (F01) and phase 1 of section 8. MVP s
 ### MVP
 
 - [x] Register, login, `GET /me`, `auth.Middleware`, `auth.Security`, `auth.PrincipalFrom`.
-- [ ] **Role naming.** Align `buyer`/`jastiper`/`admin` with the FE (`pembeli`, `roles` array) and decide whether
+- [x] **Role naming.** Align `buyer`/`jastiper`/`admin` with the FE (`pembeli`, `roles` array) and decide whether
       one user can be both buyer and jastiper (PLAN section 7, decision 3). Blocks every role check, so settle first.
-- [ ] **Refresh tokens.** Without them the FE logs out on every reload and every 15 minutes.
-  - [ ] Migration for `refresh_tokens` (see table above) and queries in `db/queries/refresh_tokens.sql`.
-  - [ ] Opaque random token (≥ 32 bytes) in an `HttpOnly; Secure; SameSite=Lax` cookie with `Path=/auth`; store only
+      Decided: one role per user, English names (`buyer`, `jastiper`, `admin`); the FE uses the same names.
+- [x] **Refresh tokens.** Without them the FE logs out on every reload and every 15 minutes.
+  - [x] Migration for `refresh_tokens` (see table above) and queries in `db/queries/refresh_tokens.sql`.
+  - [x] Opaque random token (≥ 32 bytes) in an `HttpOnly; Secure; SameSite=Lax` cookie with `Path=/auth`; store only
         its SHA-256 hash.
-  - [ ] Rotation on every use: revoke the presented token, insert a new one in the same family, set `replaced_by`.
-  - [ ] Reuse of an already-revoked token revokes the whole family.
-  - [ ] `POST /auth/refresh` returns a new access token (the FE already calls it on app load).
-  - [ ] `POST /auth/logout` revokes the family and clears the cookie; always answers 204.
-  - [ ] `register` and `login` also set the refresh cookie.
-  - [ ] CORS with `Allow-Credentials: true` and an origin allow-list (platform work; depends on the FE hosting
+  - [x] Rotation on every use: revoke the presented token, insert a new one in the same family, set `replaced_by`.
+  - [x] Reuse of an already-revoked token revokes the whole family.
+  - [x] `POST /auth/refresh` returns a new access token (the FE already calls it on app load).
+  - [x] `POST /auth/logout` revokes the family and clears the cookie; always answers 204.
+  - [x] `register` and `login` also set the refresh cookie.
+  - [x] CORS with `Allow-Credentials: true` and an origin allow-list (platform work; depends on the FE hosting
         decision, PLAN section 7 decision 6).
 - [ ] **Admin provisioning.** `go run ./cmd/api create-admin` CLI command (admins decide disputes in the MVP).
+      `cmd/api seed-demo` provisions demo users through `auth.Provision`, but there is no `create-admin` command yet.
 - [ ] New users use UUIDv7 (`uuid.NewV7()`) per [DATABASE.md](../DATABASE.md) conventions; `Register` currently uses
       `uuid.New()` (v4).
 
