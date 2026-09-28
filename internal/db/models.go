@@ -8,8 +8,38 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type Order struct {
+	ID              uuid.UUID
+	Code            string
+	TripID          uuid.UUID
+	BuyerID         uuid.UUID
+	JastiperID      uuid.UUID
+	ProductName     string
+	ProductUrl      string
+	Quantity        int32
+	Notes           string
+	ItemPrice       *int64
+	JastipFee       *int64
+	Total           *int64
+	Status          string
+	StatusReason    string
+	PaymentDeadline *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type OrderEvent struct {
+	ID         int64
+	OrderID    uuid.UUID
+	FromStatus *string
+	ToStatus   string
+	ActorID    *uuid.UUID
+	ActorType  string
+	Reason     string
+	CreatedAt  time.Time
+}
 
 type RefreshToken struct {
 	ID         uuid.UUID
@@ -17,9 +47,9 @@ type RefreshToken struct {
 	FamilyID   uuid.UUID
 	TokenHash  []byte
 	ExpiresAt  time.Time
-	RevokedAt  pgtype.Timestamptz
-	ReplacedBy pgtype.UUID
-	UserAgent  pgtype.Text
+	RevokedAt  *time.Time
+	ReplacedBy *uuid.UUID
+	UserAgent  *string
 	CreatedAt  time.Time
 }
 

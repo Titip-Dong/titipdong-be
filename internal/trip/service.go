@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -140,7 +141,7 @@ func (s *service) Create(ctx context.Context, jastiperID uuid.UUID, p CreatePara
 }
 
 func (s *service) List(ctx context.Context, p ListParams) (Page, error) {
-	after, err := decodeCursor(p.Cursor, time.Time{})
+	after, err := pagination.Decode(p.Cursor, pagination.Cursor{})
 	if err != nil {
 		return Page{}, err
 	}
@@ -153,22 +154,25 @@ func (s *service) List(ctx context.Context, p ListParams) (Page, error) {
 	if err != nil {
 		return Page{}, err
 	}
-	return page(trips, p.Limit, func(t Trip) cursor { return cursor{At: t.DepartsOn, ID: t.ID} }), nil
+	items, next := pagination.Page(trips, p.Limit, func(t Trip) pagination.Cursor {
+		return pagination.Cursor{At: t.DepartsOn, ID: t.ID}
+	})
+	return Page{Items: items, NextCursor: next}, nil
 }
 
-func (s *service) ListByJastiper(ctx context.Context, jastiperID uuid.UUID, limit int, c string) (Page, error) {
-	before, err := decodeCursor(c, time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+func (s *service) ListByJastiper(ctx context.Context, jastiperID uuid.UUID, limit int, cursor string) (Page, error) {
+	before, err := pagination.Decode(cursor, pagination.Newest)
 	if err != nil {
 		return Page{}, err
-	}
-	if c == "" {
-		before.ID = uuid.Max
 	}
 	trips, err := s.repo.ListByJastiper(ctx, jastiperID, before, limit+1)
 	if err != nil {
 		return Page{}, err
 	}
-	return page(trips, limit, func(t Trip) cursor { return cursor{At: t.CreatedAt, ID: t.ID} }), nil
+	items, next := pagination.Page(trips, limit, func(t Trip) pagination.Cursor {
+		return pagination.Cursor{At: t.CreatedAt, ID: t.ID}
+	})
+	return Page{Items: items, NextCursor: next}, nil
 }
 
 func (s *service) BySlug(ctx context.Context, slug string) (Trip, error) {
@@ -196,14 +200,6 @@ func (s *service) Close(ctx context.Context, jastiperID, id uuid.UUID) (Trip, er
 	}
 	t.Status = StatusClosed
 	return t, nil
-}
-
-func page(trips []Trip, limit int, cursorOf func(Trip) cursor) Page {
-	if limit < 1 || len(trips) <= limit {
-		return Page{Items: trips}
-	}
-	trips = trips[:limit]
-	return Page{Items: trips, NextCursor: cursorOf(trips[limit-1]).encode()}
 }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)

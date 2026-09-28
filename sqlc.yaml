@@ -17,3 +17,25 @@ sql:
             go_type: time.Time
           - db_type: date
             go_type: time.Time
+          - db_type: timestamptz
+            nullable: true
+            go_type:
+              import: time
+              type: Time
+              pointer: true
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true
+          - db_type: text
+            nullable: true
+            go_type:
+              type: string
+              pointer: true
+          - db_type: pg_catalog.int8
+            nullable: true
+            go_type:
+              type: int64
+              pointer: true
