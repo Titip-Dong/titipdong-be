@@ -36,6 +36,17 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: titipdong-api-secrets
+                  key: DATABASE_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: titipdong-api-secrets
+                  key: JWT_SECRET
           readinessProbe:
             httpGet:
               path: /health
