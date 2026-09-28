@@ -8,7 +8,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type RefreshToken struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	FamilyID   uuid.UUID
+	TokenHash  []byte
+	ExpiresAt  time.Time
+	RevokedAt  pgtype.Timestamptz
+	ReplacedBy pgtype.UUID
+	UserAgent  pgtype.Text
+	CreatedAt  time.Time
+}
 
 type User struct {
 	ID           uuid.UUID

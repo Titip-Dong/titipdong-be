@@ -11,6 +11,8 @@ type Config struct {
 	JWTSecret   string
 	Port        string
 	CORSOrigins []string
+	// Browsers other than Chrome drop Secure cookies on http://localhost.
+	CookieSecure bool
 }
 
 func Load() (Config, error) {
@@ -19,6 +21,7 @@ func Load() (Config, error) {
 	if c.Port == "" {
 		c.Port = "8080"
 	}
+	c.CookieSecure = os.Getenv("COOKIE_SECURE") != "false"
 	origins := os.Getenv("CORS_ORIGINS")
 	if origins == "" {
 		origins = "http://localhost:5173"

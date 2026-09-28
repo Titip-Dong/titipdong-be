@@ -10,14 +10,18 @@ import (
 	"github.com/google/uuid"
 )
 
-const tag = "auth"
+const (
+	tag               = "auth"
+	refreshCookieName = "refresh_token"
+)
 
 type Handler struct {
-	svc Service
+	svc          Service
+	secureCookie bool
 }
 
-func NewHandler(svc Service) *Handler {
-	return &Handler{svc: svc}
+func NewHandler(svc Service, secureCookie bool) *Handler {
+	return &Handler{svc: svc, secureCookie: secureCookie}
 }
 
 func (h *Handler) RegisterRoutes(api huma.API) {
@@ -39,6 +43,24 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Tags:        []string{tag},
 		Errors:      []int{http.StatusUnauthorized, http.StatusUnprocessableEntity},
 	}, h.login)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "refreshSession",
+		Method:      http.MethodPost,
+		Path:        "/auth/refresh",
+		Summary:     "Rotate the refresh token cookie and obtain a new access token",
+		Tags:        []string{tag},
+		Errors:      []int{http.StatusUnauthorized},
+	}, h.refresh)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "logout",
+		Method:        http.MethodPost,
+		Path:          "/auth/logout",
+		Summary:       "Revoke the refresh token and clear its cookie",
+		Tags:          []string{tag},
+		DefaultStatus: http.StatusNoContent,
+	}, h.logout)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "getCurrentUser",
@@ -77,7 +99,12 @@ type authResponse struct {
 }
 
 type authOutput struct {
-	Body authResponse
+	SetCookie http.Cookie `header:"Set-Cookie"`
+	Body      authResponse
+}
+
+type refreshCookieInput struct {
+	RefreshToken string `cookie:"refresh_token"`
 }
 
 func (h *Handler) register(ctx context.Context, in *struct{ Body registerRequest }) (*authOutput, error) {
@@ -96,7 +123,7 @@ func (h *Handler) register(ctx context.Context, in *struct{ Body registerRequest
 	case err != nil:
 		return nil, err
 	}
-	return &authOutput{Body: toAuthResponse(s)}, nil
+	return h.authOutput(s), nil
 }
 
 func (h *Handler) login(ctx context.Context, in *struct{ Body loginRequest }) (*authOutput, error) {
@@ -107,7 +134,7 @@ func (h *Handler) login(ctx context.Context, in *struct{ Body loginRequest }) (*
 	case err != nil:
 		return nil, err
 	}
-	return &authOutput{Body: toAuthResponse(s)}, nil
+	return h.authOutput(s), nil
 }
 
 func (h *Handler) me(ctx context.Context, _ *struct{}) (*struct{ Body userResponse }, error) {
@@ -121,6 +148,51 @@ func (h *Handler) me(ctx context.Context, _ *struct{}) (*struct{ Body userRespon
 		return nil, err
 	}
 	return &struct{ Body userResponse }{Body: toUserResponse(u)}, nil
+}
+
+func (h *Handler) refresh(ctx context.Context, in *refreshCookieInput) (*authOutput, error) {
+	s, err := h.svc.Refresh(ctx, in.RefreshToken)
+	switch {
+	case errors.Is(err, ErrInvalidRefreshToken):
+		clear := h.refreshCookie("", -1)
+		return nil, huma.ErrorWithHeaders(
+			huma.Error401Unauthorized("Session has expired. Log in again."),
+			http.Header{"Set-Cookie": {clear.String()}},
+		)
+	case err != nil:
+		return nil, err
+	}
+	return h.authOutput(s), nil
+}
+
+func (h *Handler) logout(ctx context.Context, in *refreshCookieInput) (*struct {
+	SetCookie http.Cookie `header:"Set-Cookie"`
+}, error) {
+	if err := h.svc.Logout(ctx, in.RefreshToken); err != nil {
+		return nil, err
+	}
+	return &struct {
+		SetCookie http.Cookie `header:"Set-Cookie"`
+	}{SetCookie: h.refreshCookie("", -1)}, nil
+}
+
+func (h *Handler) authOutput(s Session) *authOutput {
+	return &authOutput{
+		SetCookie: h.refreshCookie(s.RefreshToken, int(refreshTokenLifetime.Seconds())),
+		Body:      toAuthResponse(s),
+	}
+}
+
+func (h *Handler) refreshCookie(value string, maxAge int) http.Cookie {
+	return http.Cookie{
+		Name:     refreshCookieName,
+		Value:    value,
+		Path:     "/auth",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   h.secureCookie,
+		SameSite: http.SameSiteLaxMode,
+	}
 }
 
 func toAuthResponse(s Session) authResponse {
