@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Titip-Dong/titipdong-be/internal/platform/logging"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/monitoring"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 )
 
@@ -46,6 +49,10 @@ type healthStatus struct {
 // registered.
 func New(corsOrigins ...string) (*fiber.App, huma.API) {
 	app := fiber.New()
+	metrics := monitoring.New()
+	app.Use(metrics.FiberMiddleware())
+	app.Use(logging.RequestMiddleware(slog.Default()))
+
 	if len(corsOrigins) > 0 {
 		app.Use(cors.New(cors.Config{
 			AllowOrigins:     strings.Join(corsOrigins, ","),
@@ -58,6 +65,7 @@ func New(corsOrigins ...string) (*fiber.App, huma.API) {
 	// documented schemas exactly.
 	config.CreateHooks = nil
 	api := humafiber.NewV2(app, config)
+	app.Get("/metrics", adaptor.HTTPHandler(metrics.Handler()))
 
 	huma.Register(api, huma.Operation{
 		OperationID: "health",

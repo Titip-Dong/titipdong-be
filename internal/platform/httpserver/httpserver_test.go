@@ -2,8 +2,10 @@ package httpserver
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -75,5 +77,53 @@ func TestCORS(t *testing.T) {
 		if tc.want != "" && res.Header.Get("Access-Control-Allow-Credentials") != "true" {
 			t.Errorf("origin %s: Allow-Credentials not set", tc.origin)
 		}
+	}
+}
+
+func TestMetrics(t *testing.T) {
+	app, _ := New()
+	if _, err := app.Test(httptest.NewRequest(http.MethodGet, "/health", nil)); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	res, err := app.Test(httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("status code = %d, want %d", res.StatusCode, http.StatusOK)
+	}
+	if contentType := res.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/plain") {
+		t.Errorf("Content-Type = %q, want Prometheus text format", contentType)
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	for _, metric := range []string{
+		"http_server_requests_total",
+		"http_server_request_duration_seconds",
+		"http_server_in_flight_requests",
+		"go_goroutines",
+		"process_cpu_seconds_total",
+	} {
+		if !strings.Contains(string(body), metric) {
+			t.Errorf("metrics response does not contain %q", metric)
+		}
+	}
+}
+
+func TestRequestLogMiddlewareSetsRequestID(t *testing.T) {
+	app, _ := New()
+	res, err := app.Test(httptest.NewRequest(http.MethodGet, "/openapi.json", nil))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	if requestID := res.Header.Get("X-Request-ID"); requestID == "" {
+		t.Error("X-Request-ID header is empty")
 	}
 }

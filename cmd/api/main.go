@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
@@ -12,6 +13,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/platform/config"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/httpserver"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/logging"
 	"github.com/Titip-Dong/titipdong-be/internal/shipment"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
 )
@@ -21,19 +23,25 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := logging.ConfigureDefault(); err != nil {
+		log.Fatal(err)
+	}
 	pool, err := database.Connect(context.Background(), cfg.DatabaseURL)
 	if err != nil {
-		log.Fatal(err)
+		slog.Error("database connection failed", "error", err)
+		os.Exit(1)
 	}
 	defer pool.Close()
 
 	if err := database.Migrate(context.Background(), pool, migrations.FS); err != nil {
-		log.Fatal(err)
+		slog.Error("database migration failed", "error", err)
+		os.Exit(1)
 	}
 
 	if len(os.Args) > 1 && os.Args[1] == "seed-demo" {
 		if err := seedDemo(context.Background(), pool); err != nil {
-			log.Fatal(err)
+			slog.Error("demo seed failed", "error", err)
+			os.Exit(1)
 		}
 		return
 	}
@@ -50,5 +58,8 @@ func main() {
 	payment.NewHandler(paymentService, cfg.PaymentGateway == "fake").RegisterRoutes(api)
 	shipment.NewHandler(shipment.NewService(pool, orderService, paymentService)).RegisterRoutes(api)
 
-	log.Fatal(app.Listen(":" + cfg.Port))
+	if err := app.Listen(":" + cfg.Port); err != nil {
+		slog.Error("API server stopped", "error", err)
+		os.Exit(1)
+	}
 }

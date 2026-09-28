@@ -17,7 +17,7 @@ type Config struct {
 }
 
 func Load() (Config, error) {
-	loadLocalEnv(".env.local")
+	loadLocalEnv(".env")
 	c := Config{DatabaseURL: os.Getenv("DATABASE_URL"), JWTSecret: os.Getenv("JWT_SECRET"), Port: os.Getenv("PORT")}
 	if c.Port == "" {
 		c.Port = "8080"
