@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # AKS prototype observation. Each target is a separate port-forward to one
+  # named API pod; see MONITORING_RUNBOOK.md. Do not replace these with a
+  # service port-forward when replica-level evidence is required.
+  - job_name: titipdong-api-aks
+    static_configs:
+      - targets: [host.docker.internal:8081]
+        labels:
+          environment: aks-prototype
+          pod: api-pod-1
+      - targets: [host.docker.internal:8082]
+        labels:
+          environment: aks-prototype
+          pod: api-pod-2

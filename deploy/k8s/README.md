@@ -1,4 +1,4 @@
-# Deploy the API smoke test to AKS
+# Deploy the API to AKS
 
 This deployment creates two API pods in the `titipdong` namespace and an Azure public LoadBalancer service for prototype monitoring and smoke tests. The active image registry is `titipdongacr2026.azurecr.io`.
 
@@ -86,6 +86,11 @@ Expected response:
 ```json
 {"status":"ok"}
 ```
+
+For controlled monitoring, `/metrics` exposes Prometheus-format application and
+Go runtime metrics. It is not a readiness or liveness endpoint. The local
+Prometheus/Grafana setup and two-pod port-forward procedure are documented in
+`titipdong-docs/MONITORING_RUNBOOK.md`.
 
 The two API pods must be on different nodes. The Deployment uses required pod anti-affinity to enforce that constraint. If either node is unavailable, the second pod remains pending rather than being scheduled alongside the first pod.
 

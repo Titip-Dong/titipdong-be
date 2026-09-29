@@ -1,0 +1,188 @@
+package payment
+
+import (
+	"context"
+	"errors"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/Titip-Dong/titipdong-be/db/migrations"
+	"github.com/Titip-Dong/titipdong-be/internal/auth"
+	"github.com/Titip-Dong/titipdong-be/internal/db"
+	"github.com/Titip-Dong/titipdong-be/internal/order"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
+	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type fixture struct {
+	pool     *pgxpool.Pool
+	orders   order.Service
+	svc      *service
+	buyer    uuid.UUID
+	jastiper uuid.UUID
+}
+
+func newFixture(t *testing.T, now func() time.Time) fixture {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := database.Connect(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := database.Migrate(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+
+	user := func(role auth.Role) uuid.UUID {
+		u, err := auth.Provision(ctx, pool, auth.RegisterParams{
+			Name: string(role), Email: uuid.NewString() + "@test.local", Password: "password123", Role: role,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.ID
+	}
+	trips := trip.NewService(pool)
+	orders := order.NewService(pool, trips)
+	return fixture{
+		pool:     pool,
+		orders:   orders,
+		svc:      newService(newRepository(pool), orders, FakeGateway{}, now),
+		buyer:    user(auth.RoleBuyer),
+		jastiper: user(auth.RoleJastiper),
+	}
+}
+
+// approvedOrder creates an order approved for quantity × itemPrice + fee.
+func (f fixture) approvedOrder(t *testing.T, quantity int, itemPrice, fee int64) order.Order {
+	t.Helper()
+	ctx := context.Background()
+	tr, err := trip.NewService(f.pool).Create(ctx, f.jastiper, trip.CreateParams{
+		Title:              "Jastip Test",
+		DestinationCity:    "Tokyo",
+		DestinationCountry: "JP",
+		DepartsOn:          time.Now().AddDate(0, 0, 1),
+		ReturnsOn:          time.Now().AddDate(0, 0, 10),
+		RequestDeadline:    time.Now().Add(72 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := f.orders.Create(ctx, f.buyer, tr.Slug, order.CreateParams{ProductName: "Item", Quantity: quantity})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err = f.orders.Approve(ctx, f.jastiper, o.ID, itemPrice, fee)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+func (f fixture) escrow(t *testing.T, orderID uuid.UUID) int64 {
+	t.Helper()
+	b, err := db.New(f.pool).LedgerOrderBalance(context.Background(), db.LedgerOrderBalanceParams{Kind: "escrow", OrderID: &orderID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestPaymentToReleaseFlow(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.approvedOrder(t, 3, 30_000, 10_001) // total 100.001: fee 5.000, jastiper 95.001
+
+	p, err := f.svc.Checkout(ctx, f.buyer, o.ID)
+	if err != nil {
+		t.Fatalf("Checkout() error = %v", err)
+	}
+	if p.Amount != 100_001 || p.Status != StatusPending || p.CheckoutToken == "" {
+		t.Errorf("payment = %+v", p)
+	}
+	again, err := f.svc.Checkout(ctx, f.buyer, o.ID)
+	if err != nil || again.ID != p.ID {
+		t.Errorf("Checkout(again) = %v, %v; want the same pending payment", again.ID, err)
+	}
+
+	if _, err := f.svc.SimulatePaid(ctx, uuid.New(), p.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SimulatePaid(stranger) error = %v, want ErrNotFound", err)
+	}
+	for range 2 {
+		if _, err := f.svc.SimulatePaid(ctx, f.buyer, p.ID); err != nil {
+			t.Fatalf("SimulatePaid() error = %v", err)
+		}
+	}
+	if got := f.escrow(t, o.ID); got != 100_001 {
+		t.Errorf("escrow after paying twice = %d, want 100001", got)
+	}
+	if _, err := f.svc.Checkout(ctx, f.buyer, o.ID); !errors.Is(err, ErrOrderNotPayable) {
+		t.Errorf("Checkout(paid) error = %v, want ErrOrderNotPayable", err)
+	}
+
+	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+		t.Errorf("Release(paid) error = %v, want ErrInvalidTransition", err)
+	}
+	before, _ := f.svc.JastiperBalance(ctx, f.jastiper)
+	if _, err := f.orders.MarkShipped(ctx, f.jastiper, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.orders.MarkDelivered(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	released, err := f.svc.Release(ctx, o.ID)
+	if err != nil {
+		t.Fatalf("Release() error = %v", err)
+	}
+	after, _ := f.svc.JastiperBalance(ctx, f.jastiper)
+	if released.Status != order.StatusReleased || after-before != 95_001 || f.escrow(t, o.ID) != 0 {
+		t.Errorf("status %s, jastiper +%d, escrow %d; want released, +95001, 0", released.Status, after-before, f.escrow(t, o.ID))
+	}
+}
+
+func TestCheckoutAfterDeadline(t *testing.T) {
+	late := time.Now().Add(25 * time.Hour)
+	f := newFixture(t, func() time.Time { return late })
+	o := f.approvedOrder(t, 1, 10_000, 0)
+
+	if _, err := f.svc.Checkout(context.Background(), f.buyer, o.ID); !errors.Is(err, ErrDeadlinePassed) {
+		t.Errorf("Checkout() error = %v, want ErrDeadlinePassed", err)
+	}
+}
+
+func TestLedgerIntegrity(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.approvedOrder(t, 1, 10_000, 0)
+	repo := newRepository(f.pool)
+
+	err := repo.WithTx(ctx, func(ctx context.Context) error {
+		return repo.Post(ctx, uuid.New(), ledgerTransaction{
+			Kind:           "payment_received",
+			OrderID:        o.ID,
+			IdempotencyKey: "test:" + uuid.NewString(),
+			Entries: []entry{
+				{Account: account{Kind: accountGatewayClearing}, Direction: debit, Amount: 10_000},
+				{Account: account{Kind: accountEscrow}, Direction: credit, Amount: 9_999},
+			},
+		})
+	})
+	if err == nil {
+		t.Error("unbalanced ledger transaction committed")
+	}
+
+	if _, err := f.pool.Exec(ctx, `UPDATE ledger_entries SET amount = amount + 1`); err == nil {
+		t.Error("UPDATE on ledger_entries succeeded, want append-only error")
+	}
+	if _, err := f.pool.Exec(ctx, `DELETE FROM ledger_transactions`); err == nil {
+		t.Error("DELETE on ledger_transactions succeeded, want append-only error")
+	}
+}

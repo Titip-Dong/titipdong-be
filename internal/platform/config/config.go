@@ -10,13 +10,34 @@ type Config struct {
 	DatabaseURL string
 	JWTSecret   string
 	Port        string
+	CORSOrigins []string
+	// Browsers other than Chrome drop Secure cookies on http://localhost.
+	CookieSecure   bool
+	PaymentGateway string
 }
 
 func Load() (Config, error) {
-	loadLocalEnv(".env.local")
+	loadLocalEnv(".env")
 	c := Config{DatabaseURL: os.Getenv("DATABASE_URL"), JWTSecret: os.Getenv("JWT_SECRET"), Port: os.Getenv("PORT")}
 	if c.Port == "" {
 		c.Port = "8080"
+	}
+	c.CookieSecure = os.Getenv("COOKIE_SECURE") != "false"
+	c.PaymentGateway = os.Getenv("PAYMENT_GATEWAY")
+	if c.PaymentGateway == "" {
+		c.PaymentGateway = "fake"
+	}
+	if c.PaymentGateway != "fake" {
+		return Config{}, fmt.Errorf("PAYMENT_GATEWAY %q is not supported yet; use fake", c.PaymentGateway)
+	}
+	origins := os.Getenv("CORS_ORIGINS")
+	if origins == "" {
+		origins = "http://localhost:5173"
+	}
+	for _, o := range strings.Split(origins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			c.CORSOrigins = append(c.CORSOrigins, o)
+		}
 	}
 	if c.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

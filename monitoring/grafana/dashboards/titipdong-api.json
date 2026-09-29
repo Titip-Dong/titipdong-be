@@ -1,0 +1,74 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "targets": [{ "expr": "sum by (route) (rate(http_server_requests_total[5m]))", "legendFormat": "{{route}}" }],
+      "title": "API throughput by route",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, route) (rate(http_server_request_duration_seconds_bucket[5m])))", "legendFormat": "p95 {{route}}" }],
+      "title": "API p95 latency by route",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "id": 3,
+      "targets": [{ "expr": "sum by (status_code) (rate(http_server_requests_total{status_code=~\"5..\"}[5m]))", "legendFormat": "{{status_code}}" }],
+      "title": "API 5xx error rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "id": 4,
+      "targets": [{ "expr": "process_resident_memory_bytes", "legendFormat": "{{pod}}" }],
+      "title": "API process resident memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "id": 5,
+      "targets": [{ "expr": "sum by (route) (http_server_in_flight_requests)", "legendFormat": "{{route}}" }],
+      "title": "In-flight requests",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "id": 6,
+      "targets": [{ "expr": "sum by (from_status, to_status) (increase(orders_state_transitions_total[1h]))", "legendFormat": "{{from_status}} -> {{to_status}}" }],
+      "title": "Order state transitions (1h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 24 },
+      "id": 7,
+      "options": { "dedupStrategy": "none", "enableLogDetails": true, "showCommonLabels": false, "sortOrder": "Descending", "wrapLogMessage": true },
+      "targets": [{ "expr": "{service=\"titipdong-api\"}", "refId": "A" }],
+      "title": "API request logs",
+      "type": "logs"
+    }
+  ],
+  "schemaVersion": 41,
+  "tags": ["titipdong", "prototype"],
+  "title": "TITIP DONG Prototype API",
+  "uid": "titipdong-api",
+  "version": 1
+}

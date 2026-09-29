@@ -3,8 +3,12 @@ package database
 import (
 	"context"
 	"fmt"
+	"io/fs"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
 func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
@@ -19,19 +23,22 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
-	_, err := pool.Exec(ctx, `
-CREATE TABLE IF NOT EXISTS users (
-  id UUID PRIMARY KEY,
-  name VARCHAR(100) NOT NULL,
-  email TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  role VARCHAR(16) NOT NULL CHECK (role IN ('buyer', 'jastiper', 'admin')),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_key ON users (LOWER(email));`)
+// Migrate applies pending goose migrations from migrations. A PostgreSQL
+// advisory lock ensures only one replica migrates when several start at once.
+func Migrate(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS) error {
+	locker, err := lock.NewPostgresSessionLocker()
 	if err != nil {
-		return fmt.Errorf("migrate users: %w", err)
+		return fmt.Errorf("create migration lock: %w", err)
+	}
+	db := stdlib.OpenDB(*pool.Config().ConnConfig)
+	defer func() { _ = db.Close() }()
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations, goose.WithSessionLocker(locker))
+	if err != nil {
+		return fmt.Errorf("create migration provider: %w", err)
+	}
+	if _, err := provider.Up(ctx); err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
 	}
 	return nil
 }

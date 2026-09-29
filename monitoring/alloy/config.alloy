@@ -1,0 +1,63 @@
+// Discovers local Docker containers, then forwards their stdout/stderr log
+// streams to Loki. It adds only bounded infrastructure labels.
+discovery.docker "local" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "local" {
+  targets = discovery.docker.local.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+}
+
+loki.source.docker "local" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.local.output
+  forward_to = [loki.process.api.receiver]
+}
+
+// The API normally runs with `go run` on the host during local development.
+// Its JSON file is bind-mounted into this container by compose.yaml.
+local.file_match "titipdong_api" {
+  path_targets = [{
+    __path__    = "/var/log/titipdong/*.jsonl",
+    environment = "local",
+    job         = "titipdong-api",
+    source      = "host-file",
+  }]
+}
+
+loki.source.file "titipdong_api" {
+  targets    = local.file_match.titipdong_api.targets
+  forward_to = [loki.process.api.receiver]
+}
+
+// API request logs are JSON. Values remain searchable in the log body; only
+// low-cardinality level and service values become Loki labels.
+loki.process "api" {
+  forward_to = [loki.write.local.receiver]
+
+  stage.json {
+    expressions = {
+      level   = "level",
+      service = "service",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level   = "",
+      service = "",
+    }
+  }
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

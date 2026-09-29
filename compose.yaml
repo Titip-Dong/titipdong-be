@@ -1,0 +1,50 @@
+# Local all-Docker development: PostgreSQL and the API run in containers.
+name: titipdong
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-titipdong}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-titipdong-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-titipdong}
+    ports:
+      # Override with POSTGRES_PORT=5433 if another PostgreSQL already uses 5432,
+      # and update DATABASE_URL in .env.local to match.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U titipdong -d titipdong"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+    image: titipdong-api:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:-titipdong}:${POSTGRES_PASSWORD:-titipdong-dev}@postgres:5432/${POSTGRES_DB:-titipdong}?sslmode=disable"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      PORT: "8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FILE: ""
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      PAYMENT_GATEWAY: ${PAYMENT_GATEWAY:-fake}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # Fiber listens on IPv4 in this image; localhost may resolve to ::1.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres-data:
