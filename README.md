@@ -90,6 +90,7 @@ Run `make` to list every command. The common ones:
 
 - `GET /openapi.json`: the OpenAPI 3.1 contract, generated from the Huma operations. The frontend generates its
   client from it (`pnpm api` in `titipdong-fe`).
+  `make openapi` writes the same spec to `openapi.json` without a database or a running API.
 - `GET /docs`: interactive API docs.
 - `GET /health`: liveness probe.
 - `GET /health/ready`: readiness probe; 503 while PostgreSQL is unreachable.

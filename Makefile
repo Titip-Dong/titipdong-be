@@ -45,6 +45,10 @@ run: ## Run the API on the host (reads .env, applies migrations on startup)
 seed: ## Create the demo accounts (idempotent)
 	go run ./cmd/api seed-demo
 
+.PHONY: openapi
+openapi: ## Write the OpenAPI spec to openapi.json (no database needed)
+	go run ./cmd/api openapi > openapi.json
+
 .PHONY: build
 build: ## Build the API binary into bin/
 	go build -o bin/titipdong-api ./cmd/api

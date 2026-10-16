@@ -29,6 +29,14 @@ import (
 const shutdownTimeout = 20 * time.Second
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "openapi" {
+		spec, err := openAPISpec()
+		if err != nil {
+			log.Fatal(err)
+		}
+		_, _ = os.Stdout.Write(spec)
+		return
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal(err)
