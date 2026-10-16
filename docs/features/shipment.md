@@ -1,28 +1,30 @@
 # F05 Shipment
 
-| Item    | Value               |
-| ------- | ------------------- |
-| Owner   | Alfian              |
-| Package | `internal/shipment` |
-| Tag     | `shipment`          |
-| Status  | Not started         |
+| Item    | Value                                                         |
+| ------- | ------------------------------------------------------------- |
+| Package | `internal/shipment`                                           |
+| Tag     | `shipment`                                                    |
+| Status  | Partial: ship, get, confirm receipt done; proof photo, notifications to do |
 
 ## Overview
 
 After an order is `paid`, the jastiper hands the item over, either in person (**COD**, meet-up) or by **courier**
-with a tracking number, and uploads a proof photo. The order becomes `shipped`. The buyer confirms receipt, which
-moves the order to `delivered` and triggers the release of funds (F04).
+with a tracking number, optionally with a proof photo. The order becomes `shipped`. The buyer confirms receipt, which
+moves the order to `delivered` and releases the funds (F04) in the same transaction.
 
-Courier tracking comes from an external tracking provider behind an interface (fake in development and tests).
+If the buyer neither confirms nor opens a dispute within 7 days of shipping, the `orders.auto_release` job releases
+the funds (see [payment.md](payment.md)).
+
+Courier status is not fetched from a tracking provider; the buyer checks the tracking number on the courier's site.
 
 ## Business rules
 
-- Only the order's jastiper can create or update the shipment, and only while the order is `paid`.
+- Only the order's jastiper can ship, and only while the order is `paid`. An order is shipped once.
 - `courier` requires `courier_code` and `tracking_number`; `cod` does not.
-- Proof photos use blob SAS uploads (`uploads.purpose = 'shipment_proof'`); the key must belong to the caller.
+- The proof photo is optional, an upload with purpose `shipment_proof` owned by the caller.
 - Only the order's buyer can confirm receipt, and only while `shipped`.
-- If the buyer never confirms, `payment.auto_release` releases after the window (PLAN section 7, decision 5), unless
-  a dispute is opened first.
+- The buyer, the jastiper, and admins can read the shipment; others get 404.
+- Shipping notifies the buyer (`order.shipped`); the release notifies the jastiper (`order.released`, from F04).
 
 ## Database tables
 
@@ -49,8 +51,6 @@ entity shipments {
   tracking_number : TEXT
   handover_note : TEXT
   proof_key : TEXT
-  tracking_status : TEXT
-  tracking_checked_at : TIMESTAMPTZ
   * shipped_at : TIMESTAMPTZ
   delivered_at : TIMESTAMPTZ
   * created_at : TIMESTAMPTZ
@@ -72,30 +72,30 @@ shipments }o..o| uploads : "proof_key = object_key"
 
 ### `shipments` (one row per order)
 
-| Column                | Type          | Notes                                           |
-| --------------------- | ------------- | ----------------------------------------------- |
-| `order_id`            | `UUID` PK FK  | → `orders.id`                                   |
-| `method`              | `TEXT`        | `cod` or `courier`                              |
-| `courier_code`        | `TEXT`        | e.g. `jne`, `jnt`, `sicepat`                    |
-| `tracking_number`     | `TEXT`        | Required for `courier`                          |
-| `handover_note`       | `TEXT`        | ≤ 1000                                          |
-| `proof_key`           | `TEXT`        | Blob key                                        |
-| `tracking_status`     | `TEXT`        | Last status from the tracking provider          |
-| `tracking_checked_at` | `TIMESTAMPTZ` |                                                 |
-| `shipped_at`          | `TIMESTAMPTZ` |                                                 |
-| `delivered_at`        | `TIMESTAMPTZ` |                                                 |
-| `created_at`, `updated_at` | `TIMESTAMPTZ` |                                        |
+| Column            | Type          | Notes                                  |
+| ----------------- | ------------- | -------------------------------------- |
+| `order_id`        | `UUID` PK FK  | → `orders.id`                          |
+| `method`          | `TEXT`        | `cod` or `courier`                     |
+| `courier_code`    | `TEXT`        | e.g. `jne`, `jnt`, `sicepat`           |
+| `tracking_number` | `TEXT`        | Required for `courier`                 |
+| `handover_note`   | `TEXT`        | ≤ 1000                                 |
+| `proof_key`       | `TEXT`        | Blob key, nullable (to add)            |
+| `shipped_at`      | `TIMESTAMPTZ` | Starts the 7-day auto-release window   |
+| `delivered_at`    | `TIMESTAMPTZ` |                                        |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` |                               |
 
-Index `shipments_tracking_poll_idx (tracking_checked_at) WHERE method = 'courier' AND delivered_at IS NULL` for the
-tracking poll job.
+Index `shipments_auto_release_idx (shipped_at) WHERE delivered_at IS NULL` (to add) for the auto-release job.
 
 ## Endpoints
 
-| Method | Path                           | operationId        | Auth                   | Description                                         |
-| ------ | ------------------------------ | ------------------ | ---------------------- | --------------------------------------------------- |
-| `PUT`  | `/orders/{id}/shipment`        | `shipOrder`        | `jastiper` (owner)     | Set method, courier, tracking, proof → `MarkShipped` |
-| `GET`  | `/orders/{id}/shipment`        | `getShipment`      | order buyer/jastiper, admin | Shipment + latest tracking status             |
-| `POST` | `/orders/{id}/confirm-receipt` | `confirmReceipt`   | `buyer` (owner)        | `MarkDelivered` → `payment.Release`                 |
+| Method | Path                           | operationId        | Auth                        | Status | Description                                         |
+| ------ | ------------------------------ | ------------------ | --------------------------- | ------ | --------------------------------------------------- |
+| `PUT`  | `/orders/{id}/shipment`        | `shipOrder`        | `jastiper` (owner)          | Done   | Set method, courier, tracking → `MarkShipped`       |
+| `GET`  | `/orders/{id}/shipment`        | `getShipment`      | order buyer/jastiper, admin | Done   | Shipment details                                    |
+| `POST` | `/orders/{id}/confirm-receipt` | `confirmReceipt`   | `buyer` (owner)             | Done   | `MarkDelivered` → `payment.Release`                 |
+
+`shipOrder` gains an optional `proofUploadId`; the shipment response gains a signed `proofUrl` and
+`autoReleaseAt` (`shipped_at + 7 days`).
 
 ## Sequence diagrams
 
@@ -113,10 +113,9 @@ participant "order.Service" as O
 participant "notification.Service" as N
 database PostgreSQL as DB
 
-Jastiper -> H : PUT /orders/{id}/shipment {method, courierCode, trackingNumber, proofKey}
+Jastiper -> H : PUT /orders/{id}/shipment {method, courierCode, trackingNumber, proofUploadId}
 H -> S : Ship(jastiperID, orderID, params)
 S -> DB : BEGIN
-S -> DB : check upload proofKey owned by caller
 S -> O : MarkShipped(orderID, jastiperID)
 O -> DB : SELECT order FOR UPDATE
 alt not owner / status != paid
@@ -125,8 +124,8 @@ alt not owner / status != paid
   H --> Jastiper : 404 / 409
 else
   O -> DB : UPDATE orders status = shipped, INSERT order_events
+  S -> DB : attach proof upload (owner + purpose checked)
   S -> DB : INSERT shipments (shipped_at = now)
-  S -> DB : River InsertTx payment.auto_release (ScheduledAt = now + window)
   S -> N : Notify(buyer, order.shipped)
   S -> DB : COMMIT
   H --> Jastiper : 200 shipment
@@ -153,7 +152,7 @@ database PostgreSQL as DB
 Pembeli -> H : POST /orders/{id}/confirm-receipt
 H -> S : ConfirmReceipt(buyerID, orderID)
 S -> DB : BEGIN
-S -> O : MarkDelivered(orderID, buyerID)
+S -> O : MarkDelivered(buyer, orderID)
 alt not owner / status != shipped
   O --> S : error
   H --> Pembeli : 404 / 409
@@ -163,30 +162,23 @@ else
   P -> DB : ledger escrow → jastiper 95% + platform 5%
   P -> O : MarkReleased(orderID)
   S -> DB : COMMIT
-  H --> Pembeli : 200 order (released)
+  H --> Pembeli : 200 shipment
 end
 @enduml
 ```
 
 </details>
 
-## To do
+## Remaining work
 
-MVP scope is defined in [README.md](README.md#mvp-scope).
+Done:
 
-### MVP
+- [x] `shipments` table and queries.
+- [x] `PUT /orders/{id}/shipment`, `GET /orders/{id}/shipment`, `POST /orders/{id}/confirm-receipt` (one
+      transaction with the release).
 
-- [x] Migration `create_shipments` and queries, **without** `proof_key`, `tracking_status`, and
-      `tracking_checked_at`.
-- [x] `PUT /orders/{id}/shipment` (method `cod` or `courier` + courier code and tracking number) →
-      `order.MarkShipped`.
-- [x] `GET /orders/{id}/shipment` (stored data only; the buyer checks the tracking number on the courier's site).
-- [x] `POST /orders/{id}/confirm-receipt` → `order.MarkDelivered` → `payment.Release`, in one transaction.
+Remaining:
 
-### Post-MVP
-
-- [ ] Choose the tracking provider; define the `tracker` interface and a fake; show tracking status in
-      `getShipment`.
-- [ ] Tracking poll job (courier shipments not yet delivered).
-- [ ] Proof photos through blob SAS uploads (`platform/blob`).
-- [ ] Schedule `payment.auto_release` when shipping (needs the worker).
+- [ ] `proof_key` column, `proofUploadId` on ship, `proofUrl` in the response.
+- [ ] `autoReleaseAt` in the response and the `shipped_at` index for the auto-release job.
+- [ ] `order.shipped` notification.

@@ -1,10 +1,12 @@
 # TITIP DONG database design
 
-The full PostgreSQL schema for the platform, grouped by the feature that mainly uses each table. Only `users` exists today;
-every other table is a design that its module creates through a goose migration when the module is implemented. Once
-a migration exists, **the migration is the source of truth** and this document is updated to match it.
+The full PostgreSQL schema for the platform, grouped by the feature that mainly uses each table. Section headings
+say whether a table already has a migration (**exists**), exists but still gains columns (**exists, to extend**), or
+is still to be created (**to add**). Once a migration exists, **the migration is the source of truth** and this
+document is updated to match it.
 
-Related: endpoints and flows per feature in [`PLAN.md`](PLAN.md) section 4, open decisions in [`PLAN.md`](PLAN.md) section 7.
+Related: endpoints and flows per feature in [`features/`](features/README.md), scope decisions in
+[`PLAN.md`](PLAN.md#2-scope-decisions).
 
 ## 1. Conventions
 
@@ -100,7 +102,6 @@ package "F03 Order" {
     product_url : TEXT
     photo_key : TEXT
     * quantity : INTEGER
-    * capacity_units : INTEGER
     notes : TEXT
     item_price : BIGINT
     jastip_fee : BIGINT
@@ -130,23 +131,10 @@ package "F04 Payment & Escrow" {
     * amount : BIGINT
     * provider : TEXT
     provider_transaction_id : TEXT <<UQ>>
-    payment_type : TEXT
     * status : TEXT
     checkout_token : TEXT
     * expires_at : TIMESTAMPTZ
     paid_at : TIMESTAMPTZ
-  }
-  entity payment_notifications {
-    * id : BIGINT <<PK identity>>
-    --
-    * provider : TEXT
-    * provider_transaction_id : TEXT
-    * transaction_status : TEXT
-    payment_id : UUID <<FK>>
-    * signature_valid : BOOLEAN
-    * payload : JSONB
-    outcome : TEXT
-    * received_at : TIMESTAMPTZ
   }
   entity refunds {
     * id : UUID <<PK>>
@@ -182,22 +170,23 @@ package "F04 Payment & Escrow" {
     * amount : BIGINT
   }
   entity payout_accounts {
-    * id : UUID <<PK>>
+    * user_id : UUID <<PK, FK>>
     --
-    * user_id : UUID <<FK, UQ>>
-    * bank_code : TEXT
+    * bank_name : TEXT
     * account_number : TEXT
     * account_name : TEXT
-    verified_at : TIMESTAMPTZ
   }
   entity payouts {
     * id : UUID <<PK>>
     --
     * jastiper_id : UUID <<FK>>
-    * payout_account_id : UUID <<FK>>
     * amount : BIGINT
+    * bank_name : TEXT
+    * account_number : TEXT
+    * account_name : TEXT
     * status : TEXT
-    provider_ref : TEXT <<UQ>>
+    reference : TEXT
+    decided_by : UUID <<FK>>
   }
 }
 
@@ -210,7 +199,6 @@ package "F05 Shipment" {
     tracking_number : TEXT
     handover_note : TEXT
     proof_key : TEXT
-    tracking_status : TEXT
     * shipped_at : TIMESTAMPTZ
     delivered_at : TIMESTAMPTZ
   }
@@ -256,18 +244,6 @@ package "F07 Notification" {
     * data : JSONB
     read_at : TIMESTAMPTZ
   }
-  entity outbound_emails {
-    * id : UUID <<PK>>
-    --
-    user_id : UUID <<FK>>
-    * to_address : TEXT
-    * template : TEXT
-    * data : JSONB
-    * status : TEXT
-    provider_message_id : TEXT
-    last_error : TEXT
-    sent_at : TIMESTAMPTZ
-  }
 }
 
 package "Platform" {
@@ -308,7 +284,6 @@ orders ||--o{ order_events : "status history"
 users |o--o{ order_events : actor
 ' F04
 orders ||--o{ payments : "paid by"
-payments |o--o{ payment_notifications : receives
 orders ||--o{ refunds : "refunded by"
 payments ||--o{ refunds : "refunded from"
 ledger_transactions ||--|{ ledger_entries : "balanced by"
@@ -317,8 +292,7 @@ orders |o--o{ ledger_transactions : "for"
 orders |o--o{ ledger_entries : "escrow per order"
 users |o--o{ ledger_accounts : "owns (payable / refundable)"
 users ||--o| payout_accounts : has
-payout_accounts ||--o{ payouts : "paid to"
-users ||--o{ payouts : "receives (jastiper)"
+users ||--o{ payouts : "requests (jastiper)"
 ' F05
 orders ||--o| shipments : "handed over via"
 ' F06
@@ -328,7 +302,6 @@ disputes ||--o{ dispute_evidence : has
 disputes ||--o{ dispute_messages : has
 ' F07
 users ||--o{ notifications : receives
-users |o--o{ outbound_emails : "is sent"
 ' Platform
 users ||--o{ uploads : owns
 users |o--o{ audit_logs : "acts in"
@@ -340,17 +313,17 @@ users |o--o{ audit_logs : "acts in"
 | F01 Auth & User       | `users`, `refresh_tokens`                                                                           |
 | F02 Trip & Catalog    | `trips`, `trip_items`                                                                               |
 | F03 Order             | `orders`, `order_events`                                                                            |
-| F04 Payment & Escrow  | `payments`, `payment_notifications`, `refunds`, `ledger_accounts`, `ledger_transactions`, `ledger_entries`, `payouts`, `payout_accounts` |
+| F04 Payment & Escrow  | `payments`, `refunds`, `ledger_accounts`, `ledger_transactions`, `ledger_entries`, `payout_accounts`, `payouts` |
 | F05 Shipment          | `shipments`                                                                                         |
 | F06 Dispute           | `disputes`, `dispute_evidence`, `dispute_messages`                                                  |
-| F07 Notification      | `notifications`, `outbound_emails`                                                                  |
+| F07 Notification      | `notifications`                                                                                     |
 | F08 Admin             | none (reads the other tables through shared queries)                                                |
 | Platform              | `audit_logs`, `uploads`                                                                             |
-| Managed by tools      | `goose_db_version` (goose), `river_*` (River job queue)                                             |
+| Managed by tools      | `goose_db_version` (goose)                                                                          |
 
 ## 3. F01 Auth & User
 
-### `users` (exists; `status`, `phone`, and `updated_at` still to be added)
+### `users` (exists, to extend: `status`, `phone`, `updated_at`)
 
 ```sql
 CREATE TABLE users (
@@ -367,12 +340,10 @@ CREATE TABLE users (
 CREATE UNIQUE INDEX users_email_lower_key ON users (LOWER(email));
 ```
 
-- `role` is one role per user. Whether a user can be both buyer and jastiper is open (PLAN section 7, decision 3); if yes,
-  this becomes a `user_roles (user_id, role)` table.
+- `role` is one role per user and never changes.
 - Suspended users cannot log in or refresh; their existing access token expires within 15 minutes.
-- Identity verification (KYC) tables are not designed until that decision is made (PLAN section 7, decision 2).
 
-### `refresh_tokens`
+### `refresh_tokens` (exists)
 
 ```sql
 CREATE TABLE refresh_tokens (
@@ -391,12 +362,13 @@ CREATE INDEX refresh_tokens_family_idx ON refresh_tokens (family_id);
 ```
 
 Rotation: each refresh revokes the presented token, inserts a new one in the same family, and sets `replaced_by`.
-Presenting a token that is already revoked means it was stolen or replayed, so the whole family is revoked. A
-periodic job deletes rows past `expires_at`; this is the only table where old rows are deleted.
+Presenting a token that is already revoked means it was stolen or replayed, so the whole family is revoked. The
+`auth.purge_tokens` job deletes rows past `expires_at`; this is one of the two tables where old rows are deleted
+(the other is `uploads`).
 
 ## 4. F02 Trip & Catalog
 
-### `trips`
+### `trips` (exists, to extend: `capacity`, `reserved_capacity`)
 
 ```sql
 CREATE TABLE trips (
@@ -419,17 +391,18 @@ CREATE TABLE trips (
     CHECK (returns_on >= departs_on),
     CHECK (reserved_capacity BETWEEN 0 AND capacity)
 );
-CREATE INDEX trips_browse_idx ON trips (destination_city, departs_on) WHERE status = 'open';
-CREATE INDEX trips_jastiper_idx ON trips (jastiper_id, created_at DESC);
+CREATE INDEX trips_browse_idx ON trips (departs_on, id) WHERE status = 'open';
+CREATE INDEX trips_jastiper_idx ON trips (jastiper_id, created_at DESC, id DESC);
 ```
 
-- The capacity unit (kg, item count, or other) is open (PLAN section 7, decision 4). The columns are integers in that unit.
+- Capacity is counted in items: an order reserves its `quantity`. The migration that adds the columns backfills
+  `reserved_capacity` from existing active orders.
 - `reserved_capacity` is changed only by `trip.Service.Reserve/Release`, called by Order under a row lock on the
   trip. The `CHECK` makes overbooking impossible even if application code is wrong.
-- `open`: accepting requests. `closed`: past the deadline or closed by the jastiper. `completed`: trip finished.
-  `cancelled`: trip will not happen (open orders must be rejected or refunded first).
+- `open`: accepting requests. `closed`: past the deadline or closed by the jastiper. `completed`: the return date has
+  passed and no order is active (set by a job). `cancelled`: the trip will not happen (only without active orders).
 
-### `trip_items`
+### `trip_items` (to add)
 
 Popular items the jastiper offers on a trip (the catalog shown on the trip page).
 
@@ -450,7 +423,7 @@ CREATE INDEX trip_items_trip_idx ON trip_items (trip_id, position);
 
 ## 5. F03 Order
 
-### `orders`
+### `orders` (exists, to extend: `photo_key`)
 
 ```sql
 CREATE TABLE orders (
@@ -462,8 +435,7 @@ CREATE TABLE orders (
     product_name     TEXT NOT NULL CHECK (char_length(product_name) <= 200),
     product_url      TEXT NOT NULL DEFAULT '' CHECK (char_length(product_url) <= 2000),
     photo_key        TEXT,
-    quantity         INTEGER NOT NULL CHECK (quantity > 0),
-    capacity_units   INTEGER NOT NULL CHECK (capacity_units > 0),  -- trip capacity this order reserves
+    quantity         INTEGER NOT NULL CHECK (quantity > 0),     -- also the trip capacity this order reserves
     notes            TEXT NOT NULL DEFAULT '' CHECK (char_length(notes) <= 1000),
 
     -- Set when the jastiper approves. The buyer pays `total`.
@@ -485,20 +457,20 @@ CREATE TABLE orders (
     CHECK (status IN ('requested', 'rejected', 'cancelled') OR total IS NOT NULL),
     CHECK (total IS NULL OR total = item_price * quantity + jastip_fee)
 );
-CREATE INDEX orders_buyer_idx ON orders (buyer_id, created_at DESC);
-CREATE INDEX orders_jastiper_idx ON orders (jastiper_id, status, created_at DESC);
+CREATE INDEX orders_buyer_idx ON orders (buyer_id, created_at DESC, id DESC);
+CREATE INDEX orders_jastiper_idx ON orders (jastiper_id, created_at DESC, id DESC);
 CREATE INDEX orders_trip_idx ON orders (trip_id, status);
 CREATE INDEX orders_payment_deadline_idx ON orders (payment_deadline) WHERE status = 'approved';
 ```
 
 - Status values are lowercase in the database and API; the FE maps them to labels. Allowed transitions are the
-  state diagram in `titipdong-docs/PLAN.md`, enforced by the Order service (not by a trigger).
+  state machine in [`features/order.md`](features/order.md), enforced by the Order service (not by a trigger).
 - Every transition locks the row (`SELECT … FOR UPDATE`), updates `status`, and inserts an `order_events` row in the
   same transaction.
 - Timestamps of each step (paid at, shipped at, …) are read from `order_events` instead of one column per status.
 - A cancelled order may or may not have a price, depending on whether it was approved first.
 
-### `order_events`
+### `order_events` (exists)
 
 Append-only status history, used for the timeline in the UI and for audits.
 
@@ -518,22 +490,22 @@ CREATE INDEX order_events_order_idx ON order_events (order_id, id);
 
 ## 6. F04 Payment & Escrow
 
-### `payments`
+### `payments` (exists)
 
-One row per checkout attempt. The payment `id` is sent to Midtrans as its `order_id`, so every attempt is unique on
-the gateway side.
+One row per checkout attempt. The payment `id` is what a gateway would receive as its order reference, so every
+attempt is unique on the gateway side.
 
 ```sql
 CREATE TABLE payments (
     id                      UUID PRIMARY KEY,
     order_id                UUID NOT NULL REFERENCES orders (id),
     amount                  BIGINT NOT NULL CHECK (amount > 0),
-    provider                TEXT NOT NULL,             -- 'fake' (prototype) or 'midtrans'
-    provider_transaction_id TEXT UNIQUE,               -- Midtrans transaction_id, known after the first notification
+    provider                TEXT NOT NULL,             -- gateway name; 'fake' today
+    provider_transaction_id TEXT UNIQUE,               -- gateway transaction ID, known once settled
     status                  TEXT NOT NULL DEFAULT 'pending'
                             CHECK (status IN ('pending', 'paid', 'failed', 'expired', 'cancelled')),
-    checkout_token          TEXT NOT NULL DEFAULT '',  -- Snap token for the frontend
-    checkout_url            TEXT NOT NULL DEFAULT '',  -- Snap redirect URL
+    checkout_token          TEXT NOT NULL DEFAULT '',  -- token the frontend uses to open the checkout
+    checkout_url            TEXT NOT NULL DEFAULT '',  -- redirect URL, when the gateway has one
     expires_at              TIMESTAMPTZ NOT NULL,
     paid_at                 TIMESTAMPTZ,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -543,31 +515,7 @@ CREATE TABLE payments (
 CREATE UNIQUE INDEX payments_one_active_per_order ON payments (order_id) WHERE status IN ('pending', 'paid');
 ```
 
-### `payment_notifications`
-
-Every notification the gateway sends, stored before processing. This is the idempotency record and the evidence
-for reconciliation and disputes with the gateway.
-
-```sql
-CREATE TABLE payment_notifications (
-    id                      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    provider                TEXT NOT NULL,
-    provider_transaction_id TEXT NOT NULL,
-    transaction_status      TEXT NOT NULL,             -- gateway status: settlement, pending, expire, …
-    payment_id              UUID REFERENCES payments (id),
-    signature_valid         BOOLEAN NOT NULL,
-    payload                 JSONB NOT NULL,            -- raw body; contains no card data with Snap
-    outcome                 TEXT CHECK (outcome IN ('applied', 'duplicate', 'ignored', 'rejected')),
-    received_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    processed_at            TIMESTAMPTZ,
-    UNIQUE (provider, provider_transaction_id, transaction_status)
-);
-```
-
-The `UNIQUE` constraint is what makes a repeated notification a no-op: the insert conflicts, and the handler answers
-200 without touching the ledger again.
-
-### `refunds`
+### `refunds` (to add)
 
 ```sql
 CREATE TABLE refunds (
@@ -585,7 +533,7 @@ CREATE TABLE refunds (
 CREATE UNIQUE INDEX refunds_one_per_order ON refunds (order_id) WHERE status <> 'failed';
 ```
 
-### Ledger: `ledger_accounts`, `ledger_transactions`, `ledger_entries`
+### Ledger: `ledger_accounts`, `ledger_transactions`, `ledger_entries` (exist)
 
 Double-entry bookkeeping as described in `titipdong-docs/PLAN.md`. Balances are never stored; they are sums of
 entries.
@@ -631,8 +579,8 @@ Integrity rules, enforced in the database so a bug cannot break them:
 
 - **Balanced transactions.** A `DEFERRABLE INITIALLY DEFERRED` constraint trigger on `ledger_entries` checks at
   commit that each transaction's debits equal its credits and that it has at least two entries.
-- **Append-only.** A trigger rejects `UPDATE` and `DELETE` on all three ledger tables, and the application role is
-  granted only `SELECT, INSERT` on them. Mistakes are corrected with a new reversing transaction.
+- **Append-only.** A trigger rejects `UPDATE` and `DELETE` on all three ledger tables. Mistakes are corrected with a
+  new reversing transaction.
 
 Postings (amounts for an order with `total` = Rp 1.000.000):
 
@@ -646,40 +594,47 @@ Postings (amounts for an order with `total` = Rp 1.000.000):
 
 The platform fee is `floor(total × 5 / 100)`; the remainder goes to the jastiper, so no rupiah is lost to rounding.
 
-### `payouts` and `payout_accounts`
+### `payout_accounts` and `payouts` (to add)
 
-Depend on how funds are disbursed with the gateway (PLAN section 7, decision 1). Planned shape:
+A jastiper saves one bank account and requests payouts against their available balance (`jastiper_payable` minus
+payouts still `requested`). An admin transfers the money outside the system and marks the payout `paid`, which posts
+the `payout` ledger transaction, or `rejected`, which posts nothing. Bank details are copied onto the payout so the
+record stays correct if the account is changed later.
 
 ```sql
 CREATE TABLE payout_accounts (
-    id             UUID PRIMARY KEY,
-    user_id        UUID NOT NULL UNIQUE REFERENCES users (id),
-    bank_code      TEXT NOT NULL,
-    account_number TEXT NOT NULL,                     -- encrypted at the application layer
-    account_name   TEXT NOT NULL,
-    verified_at    TIMESTAMPTZ,
+    user_id        UUID PRIMARY KEY REFERENCES users (id),
+    bank_name      TEXT NOT NULL CHECK (char_length(bank_name) <= 100),
+    account_number TEXT NOT NULL CHECK (account_number ~ '^[0-9]{5,30}$'),
+    account_name   TEXT NOT NULL CHECK (char_length(account_name) <= 100),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE payouts (
-    id                 UUID PRIMARY KEY,
-    jastiper_id        UUID NOT NULL REFERENCES users (id),
-    payout_account_id  UUID NOT NULL REFERENCES payout_accounts (id),
-    amount             BIGINT NOT NULL CHECK (amount > 0),
-    status             TEXT NOT NULL DEFAULT 'requested'
-                       CHECK (status IN ('requested', 'processing', 'paid', 'failed')),
-    provider_ref       TEXT UNIQUE,
-    failure_reason     TEXT,
-    requested_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at       TIMESTAMPTZ
+    id               UUID PRIMARY KEY,
+    jastiper_id      UUID NOT NULL REFERENCES users (id),
+    amount           BIGINT NOT NULL CHECK (amount > 0),
+    bank_name        TEXT NOT NULL,
+    account_number   TEXT NOT NULL,
+    account_name     TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'requested' CHECK (status IN ('requested', 'paid', 'rejected')),
+    reference        TEXT,                              -- bank transfer reference, set when paid
+    rejection_reason TEXT,
+    decided_by       UUID REFERENCES users (id),
+    requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    decided_at       TIMESTAMPTZ,
+    CHECK ((status = 'requested') = (decided_at IS NULL))
 );
-CREATE INDEX payouts_jastiper_idx ON payouts (jastiper_id, requested_at DESC);
+CREATE INDEX payouts_jastiper_idx ON payouts (jastiper_id, requested_at DESC, id DESC);
+CREATE INDEX payouts_queue_idx ON payouts (status, requested_at, id);
+-- One open request per jastiper.
+CREATE UNIQUE INDEX payouts_one_open_per_jastiper ON payouts (jastiper_id) WHERE status = 'requested';
 ```
 
 ## 7. F05 Shipment
 
-### `shipments`
+### `shipments` (exists, to extend: `proof_key`)
 
 One row per order, created when the jastiper hands the item over.
 
@@ -690,20 +645,17 @@ CREATE TABLE shipments (
     courier_code        TEXT NOT NULL DEFAULT '',      -- e.g. jne, jnt, sicepat
     tracking_number     TEXT NOT NULL DEFAULT '',
     handover_note       TEXT NOT NULL DEFAULT '' CHECK (char_length(handover_note) <= 1000),
-    proof_key           TEXT,                          -- post-MVP: photo of the handover or receipt
-    tracking_status     TEXT,                          -- post-MVP: last status from the tracking provider
-    tracking_checked_at TIMESTAMPTZ,                   -- post-MVP
+    proof_key           TEXT,                          -- photo of the handover or receipt
     shipped_at          TIMESTAMPTZ NOT NULL,
     delivered_at        TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK (method = 'cod' OR (courier_code <> '' AND tracking_number <> ''))
 );
-CREATE INDEX shipments_tracking_poll_idx ON shipments (tracking_checked_at)
-    WHERE method = 'courier' AND delivered_at IS NULL;
+CREATE INDEX shipments_auto_release_idx ON shipments (shipped_at) WHERE delivered_at IS NULL;
 ```
 
-## 8. F06 Dispute
+## 8. F06 Dispute (to add)
 
 ```sql
 CREATE TABLE disputes (
@@ -712,16 +664,16 @@ CREATE TABLE disputes (
     opened_by     UUID NOT NULL REFERENCES users (id),
     category      TEXT NOT NULL CHECK (category IN ('not_received', 'not_as_described', 'damaged', 'other')),
     description   TEXT NOT NULL CHECK (char_length(description) <= 2000),
-    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'under_review', 'resolved')),
+    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved')),
     decision      TEXT CHECK (decision IN ('refund', 'release')),
-    decision_note TEXT,
+    decision_note TEXT CHECK (char_length(decision_note) <= 2000),
     decided_by    UUID REFERENCES users (id),
     decided_at    TIMESTAMPTZ,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK ((status = 'resolved') = (decision IS NOT NULL AND decided_by IS NOT NULL AND decided_at IS NOT NULL))
 );
-CREATE INDEX disputes_queue_idx ON disputes (status, created_at) WHERE status <> 'resolved';
+CREATE INDEX disputes_queue_idx ON disputes (status, created_at, id);
 
 CREATE TABLE dispute_evidence (
     id          UUID PRIMARY KEY,
@@ -733,7 +685,7 @@ CREATE TABLE dispute_evidence (
 );
 CREATE INDEX dispute_evidence_dispute_idx ON dispute_evidence (dispute_id);
 
--- After the initial release: conversation between buyer, jastiper, and admin.
+-- Conversation between buyer, jastiper, and admins.
 CREATE TABLE dispute_messages (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     dispute_id UUID NOT NULL REFERENCES disputes (id),
@@ -744,10 +696,9 @@ CREATE TABLE dispute_messages (
 CREATE INDEX dispute_messages_dispute_idx ON dispute_messages (dispute_id, id);
 ```
 
-A partial refund is not modelled: the decision is all-or-nothing, as in the business flow. `FINANCE.md` mentions
-percentage refunds; supporting them needs an `amount` on the decision and a matching ledger posting.
+A partial refund is not modelled: the decision is all-or-nothing, as in the business flow.
 
-## 9. F07 Notification
+## 9. F07 Notification (to add)
 
 ```sql
 CREATE TABLE notifications (
@@ -758,30 +709,15 @@ CREATE TABLE notifications (
     read_at    TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX notifications_user_idx ON notifications (user_id, created_at DESC);
+CREATE INDEX notifications_user_idx ON notifications (user_id, created_at DESC, id DESC);
 CREATE INDEX notifications_unread_idx ON notifications (user_id) WHERE read_at IS NULL;
-
-CREATE TABLE outbound_emails (
-    id                  UUID PRIMARY KEY,
-    user_id             UUID REFERENCES users (id),
-    to_address          TEXT NOT NULL,
-    template            TEXT NOT NULL,
-    data                JSONB NOT NULL DEFAULT '{}',
-    status              TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sent', 'failed')),
-    provider_message_id TEXT,
-    last_error          TEXT,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    sent_at             TIMESTAMPTZ
-);
-CREATE INDEX outbound_emails_status_idx ON outbound_emails (status, created_at) WHERE status <> 'sent';
 ```
 
-Notifications are created by River jobs, which are inserted in the same transaction as the change that caused them.
-Retries and attempt counts live in River's own tables.
+Rows are inserted by `notification.Notify` on the transaction of the change that caused them.
 
 ## 10. Platform
 
-### `audit_logs`
+### `audit_logs` (to add)
 
 Append-only record of sensitive actions: anything that moves money, dispute decisions, user suspension, and admin
 actions. Written through `platform/audit` inside the same transaction as the action.
@@ -802,12 +738,12 @@ CREATE INDEX audit_logs_target_idx ON audit_logs (target_type, target_id, id);
 CREATE INDEX audit_logs_created_idx ON audit_logs (created_at DESC);
 ```
 
-Protected like the ledger: no `UPDATE` or `DELETE` for the application role.
+Protected like the ledger: a trigger rejects `UPDATE` and `DELETE`.
 
-### `uploads`
+### `uploads` (to add)
 
 Files go straight from the browser to Blob Storage with a short-lived SAS URL. This table records what the backend
-issued, so a module only accepts keys the same user actually uploaded for that purpose.
+issued, so a module only accepts an upload the same user created for that purpose, and only after the blob exists.
 
 ```sql
 CREATE TABLE uploads (
@@ -818,21 +754,21 @@ CREATE TABLE uploads (
     object_key   TEXT NOT NULL UNIQUE,
     content_type TEXT NOT NULL,
     size_bytes   BIGINT CHECK (size_bytes > 0),
-    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'uploaded', 'attached')),
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'attached')),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     attached_at  TIMESTAMPTZ
 );
 CREATE INDEX uploads_cleanup_idx ON uploads (created_at) WHERE status <> 'attached';
 ```
 
-A cleanup job deletes blobs and rows that were never attached after 24 hours.
+The `uploads.purge_pending` job deletes blobs and rows that were never attached after 24 hours.
 
-## 11. Decisions that change this schema
+## 11. Not modelled
 
-| PLAN section 7 decision               | Affected tables                                                           |
-| ------------------------------ | ------------------------------------------------------------------------- |
-| 1. Escrow arrangement          | `payouts`, `payout_accounts`, ledger account kinds and postings           |
-| 2. KYC                         | new verification table(s) linked to `users`                               |
-| 3. Roles                       | `users.role` → `user_roles`, `actor_type` values                          |
-| 4. Capacity unit               | `trips.capacity`, `trips.reserved_capacity`, `orders.capacity_units`      |
-| 5. Deadlines                   | `orders.payment_deadline` value, auto-release job timing (no column change) |
+| Item                       | What it would add                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------- |
+| Real payment gateway       | `payment_notifications` (every callback, unique on provider + transaction + status, the idempotency record) |
+| Email                      | `outbound_emails` (delivery status per message)                                      |
+| KYC                        | Verification table(s) linked to `users`                                              |
+| Several roles per user     | `users.role` → `user_roles (user_id, role)`                                           |
+| Courier tracking           | `shipments.tracking_status`, `tracking_checked_at`                                    |

@@ -1,46 +1,64 @@
 # F04 Payment & Escrow
 
-| Item    | Value              |
-| ------- | ------------------ |
-| Owner   | Barru              |
-| Package | `internal/payment` |
-| Tag     | `payment`          |
-| Status  | Not started        |
+| Item    | Value                                                                              |
+| ------- | ---------------------------------------------------------------------------------- |
+| Package | `internal/payment`                                                                 |
+| Tag     | `payment`                                                                          |
+| Status  | Partial: checkout, settlement, ledger, release, wallet balance done; refunds, payouts, wallet history, auto-release to do |
 
 ## Overview
 
-The buyer pays the approved order total through **Midtrans Snap**. The money is held in escrow (in the ledger) until
-the order is delivered, then released to the jastiper minus a **5% platform fee**, or refunded to the buyer.
+The buyer pays the approved order total. The money is held in **escrow** (in the ledger) until the order is
+delivered, then released to the jastiper minus a **5% platform fee**, or refunded to the buyer. Jastipers withdraw
+their earnings through payout requests that an admin pays by bank transfer.
 
 Payment is the only module that writes ledger rows. It changes order status only through the order service
 (`MarkPaid`, `MarkReleased`, `MarkRefunded`).
 
-The gateway sits behind a `gateway` interface: a Midtrans adapter (sandbox for staging, production) and an in-memory
-fake for tests. The Midtrans server key lives only in backend secrets.
+The gateway sits behind the `Gateway` interface. The only implementation is the **fake gateway**
+(`PAYMENT_GATEWAY=fake`): checkout returns a token, the buyer completes payment with `POST /payments/{id}/simulate`,
+and refunds succeed immediately. `simulate` settles through the same `Settle` method a real gateway callback would
+call. A Midtrans adapter is out of scope ([PLAN.md](../PLAN.md#7-not-in-scope)).
+
+```go
+type Gateway interface {
+    Name() string
+    CreateCheckout(ctx context.Context, r CheckoutRequest) (Checkout, error)
+    Refund(ctx context.Context, r RefundRequest) (RefundResult, error)   // to add
+}
+```
 
 ## Business rules
 
 - Money is `BIGINT` whole rupiah. No floats.
 - One live payment attempt per order (`pending` or `paid`), never two successful payments.
-- The payment `id` is sent to Midtrans as `order_id`, so every attempt is unique on the gateway side.
-- Callbacks are verified by signature key, stored in `payment_notifications` **before** processing, and deduplicated
-  by `UNIQUE (provider, provider_transaction_id, transaction_status)`. A duplicate answers 200 and does nothing.
+- Checkout is refused after the order's `payment_deadline` (the order is cancelled instead).
 - Every money movement runs in one transaction with a row lock on the order: ledger transaction + order status +
-  notification job + audit log.
-- Ledger is append-only (trigger + grants), double-entry enforced by a deferred constraint trigger (debits = credits,
-  ≥ 2 entries). Balances are sums of entries, never stored.
+  notification + audit log.
+- Ledger is append-only (trigger), double-entry enforced by a deferred constraint trigger (debits = credits, ≥ 2
+  entries). Balances are sums of entries, never stored.
 - `ledger_transactions.idempotency_key` (e.g. `release:<order_id>`) prevents posting twice on retry.
 - Platform fee = `floor(total × 5 / 100)`; the remainder goes to the jastiper, so no rupiah is lost.
+- **Release** happens when the order becomes `delivered`: buyer confirmation, an admin's release decision, or the
+  `orders.auto_release` job 7 days after shipping.
+- **Refund** (whole order total) happens when the jastiper cancels a `paid` order, or an admin decides a dispute as
+  `refund`. Capacity is released on the trip.
+- **Payouts**: a jastiper with a saved payout account requests an amount up to their available balance
+  (`jastiper_payable` balance minus payouts still `requested`). An admin transfers outside the system, then marks it
+  `paid` (ledger posting) or `rejected` with a reason (no posting). One open request per jastiper at a time.
 
 ### Ledger postings (order total Rp 1.000.000)
 
-| Event                       | Debit                        | Credit                                                  |
-| --------------------------- | ---------------------------- | ------------------------------------------------------- |
-| Payment settled             | `gateway_clearing` 1.000.000 | `escrow` 1.000.000                                      |
-| Release to jastiper         | `escrow` 1.000.000           | `jastiper_payable` 950.000, `platform_revenue` 50.000   |
-| Refund decided              | `escrow` 1.000.000           | `buyer_refundable` 1.000.000                            |
-| Refund completed at gateway | `buyer_refundable` 1.000.000 | `gateway_clearing` 1.000.000                            |
-| Payout to jastiper          | `jastiper_payable` 950.000   | `gateway_clearing` 950.000                              |
+| Event                         | Transaction kind   | Debit                        | Credit                                                  |
+| ----------------------------- | ------------------ | ---------------------------- | ------------------------------------------------------- |
+| Payment settled               | `payment_received` | `gateway_clearing` 1.000.000 | `escrow` 1.000.000                                      |
+| Release to jastiper           | `release`          | `escrow` 1.000.000           | `jastiper_payable` 950.000, `platform_revenue` 50.000   |
+| Refund decided                | `refund`           | `escrow` 1.000.000           | `buyer_refundable` 1.000.000                            |
+| Refund completed at gateway   | `refund_paid`      | `buyer_refundable` 1.000.000 | `gateway_clearing` 1.000.000                            |
+| Payout paid to jastiper       | `payout`           | `jastiper_payable` 950.000   | `gateway_clearing` 950.000                              |
+
+Idempotency keys: `payment_received:<payment_id>`, `release:<order_id>`, `refund:<order_id>`,
+`refund_paid:<refund_id>`, `payout:<payout_id>`.
 
 ## Database tables
 
@@ -69,25 +87,11 @@ entity payments {
   * amount : BIGINT
   * provider : TEXT
   provider_transaction_id : TEXT <<UQ>>
-  payment_type : TEXT
   * status : TEXT
   checkout_token : TEXT
+  checkout_url : TEXT
   * expires_at : TIMESTAMPTZ
   paid_at : TIMESTAMPTZ
-}
-
-entity payment_notifications {
-  * id : BIGINT <<PK identity>>
-  --
-  * provider : TEXT
-  * provider_transaction_id : TEXT
-  * transaction_status : TEXT
-  payment_id : UUID <<FK>>
-  * signature_valid : BOOLEAN
-  * payload : JSONB
-  outcome : TEXT
-  * received_at : TIMESTAMPTZ
-  processed_at : TIMESTAMPTZ
 }
 
 entity refunds {
@@ -133,25 +137,26 @@ entity payout_accounts {
   * id : UUID <<PK>>
   --
   * user_id : UUID <<FK, UQ>>
-  * bank_code : TEXT
+  * bank_name : TEXT
   * account_number : TEXT
   * account_name : TEXT
-  verified_at : TIMESTAMPTZ
 }
 
 entity payouts {
   * id : UUID <<PK>>
   --
   * jastiper_id : UUID <<FK>>
-  * payout_account_id : UUID <<FK>>
   * amount : BIGINT
+  * bank_name : TEXT
+  * account_number : TEXT
+  * account_name : TEXT
   * status : TEXT
-  provider_ref : TEXT <<UQ>>
-  failure_reason : TEXT
+  reference : TEXT
+  rejection_reason : TEXT
+  decided_by : UUID <<FK>>
 }
 
 orders ||--o{ payments : "paid by"
-payments |o--o{ payment_notifications : receives
 orders ||--o{ refunds : "refunded by"
 payments ||--o{ refunds : "refunded from"
 orders |o--o{ ledger_transactions : for
@@ -160,51 +165,51 @@ ledger_transactions ||--|{ ledger_entries : "balanced by"
 ledger_accounts ||--o{ ledger_entries : posts
 users |o--o{ ledger_accounts : "payable / refundable"
 users ||--o| payout_accounts : has
-payout_accounts ||--o{ payouts : "paid to"
-users ||--o{ payouts : "receives (jastiper)"
+users ||--o{ payouts : "requests (jastiper)"
 @enduml
 ```
 
-| Table                   | Purpose                                                           | Key columns                                                                     |
-| ----------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `payments`              | One row per checkout attempt                                      | `order_id`, `amount`, `status` (`pending/paid/failed/expired/cancelled`), `provider_transaction_id` UNIQUE, `checkout_token`, `expires_at`, `paid_at` |
-| `payment_notifications` | Every gateway callback, idempotency + reconciliation evidence     | `provider_transaction_id`, `transaction_status`, `signature_valid`, `payload` JSONB, `outcome` (`applied/duplicate/ignored/rejected`) |
-| `refunds`               | Refund to buyer                                                   | `order_id`, `payment_id`, `amount`, `reason` (`jastiper_cancelled/dispute_refund`), `status`, `provider_refund_id` |
-| `ledger_accounts`       | Accounts                                                          | `kind` (`gateway_clearing/escrow/jastiper_payable/platform_revenue/buyer_refundable`), `user_id` for per-user kinds |
-| `ledger_transactions`   | One business event                                                | `kind` (`payment_received/release/refund/refund_paid/payout`), `order_id`, `idempotency_key` UNIQUE |
-| `ledger_entries`        | Debit/credit lines                                                | `transaction_id`, `account_id`, `order_id`, `direction`, `amount > 0`           |
-| `payout_accounts`       | Jastiper bank account (encrypted number)                          | `user_id` UNIQUE, `bank_code`, `account_number`, `account_name`                 |
-| `payouts`               | Disbursement to a jastiper                                        | `jastiper_id`, `amount`, `status` (`requested/processing/paid/failed`)          |
-
-Important indexes: `payments_one_active_per_order` (partial unique on `order_id` where `pending`/`paid`),
-`refunds_one_per_order`, `ledger_entries_account_idx`, `ledger_entries_order_idx`.
+| Table                 | State | Purpose                                                       | Key columns                                                                     |
+| --------------------- | ----- | ------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `payments`            | Done  | One row per checkout attempt                                  | `order_id`, `amount`, `status` (`pending/paid/failed/expired/cancelled`), `checkout_token`, `expires_at`, `paid_at` |
+| `ledger_accounts`     | Done  | Accounts                                                      | `kind` (`gateway_clearing/escrow/jastiper_payable/platform_revenue/buyer_refundable`), `user_id` for per-user kinds |
+| `ledger_transactions` | Done  | One business event                                            | `kind`, `order_id`, `idempotency_key` UNIQUE, `created_by`                      |
+| `ledger_entries`      | Done  | Debit/credit lines                                            | `transaction_id`, `account_id`, `order_id`, `direction`, `amount > 0`           |
+| `refunds`             | To do | Refund of an order to its buyer                               | `order_id`, `payment_id`, `amount`, `reason` (`jastiper_cancelled/dispute_refund`), `status` (`pending/succeeded/failed`) |
+| `payout_accounts`     | To do | The jastiper's bank account                                   | `user_id` UNIQUE, `bank_name`, `account_number`, `account_name`                 |
+| `payouts`             | To do | Withdrawal request; bank details copied at request time        | `jastiper_id`, `amount`, `status` (`requested/paid/rejected`), `reference`      |
 
 ## Endpoints
 
-| Method | Path                       | operationId              | Auth              | Description                                     |
-| ------ | -------------------------- | ------------------------ | ----------------- | ----------------------------------------------- |
-| `POST` | `/orders/{id}/payments`    | `createPayment`          | `buyer` (owner)   | Create (or reuse pending) Snap checkout for the order total |
-| `POST` | `/payments/callback`       | `handlePaymentCallback`  | Midtrans signature | Midtrans HTTP notification                     |
-| `GET`  | `/wallet`                  | `getWallet`              | `jastiper`        | Balance (`jastiper_payable`) and pending escrow |
-| `GET`  | `/wallet/transactions`     | `listWalletTransactions` | `jastiper`        | Ledger entries of the caller; cursor            |
+| Method | Path                            | operationId              | Auth               | Status | Description                                     |
+| ------ | ------------------------------- | ------------------------ | ------------------ | ------ | ----------------------------------------------- |
+| `POST` | `/orders/{id}/payments`         | `checkoutOrder`          | `buyer` (owner)    | Done   | Create (or reuse the pending) checkout for the order total |
+| `POST` | `/payments/{id}/simulate`       | `simulatePayment`        | `buyer` (owner)    | Done   | Fake gateway only: settle the payment           |
+| `GET`  | `/wallet`                       | `getWallet`              | `jastiper`         | Done   | Balance; gains `inEscrow` and `pendingPayout`    |
+| `GET`  | `/wallet/transactions`          | `listWalletTransactions` | `jastiper`         | To do  | Ledger entries of the caller's payable account; cursor |
+| `POST` | `/orders/{id}/cancel-paid`      | `cancelPaidOrder`        | `jastiper` (owner) | To do  | Body `{ reason }`: cancel a `paid` order and refund the buyer |
+| `GET`  | `/me/payout-account`            | `getPayoutAccount`       | `jastiper`         | To do  | Saved bank account (404 if none)                |
+| `PUT`  | `/me/payout-account`            | `savePayoutAccount`      | `jastiper`         | To do  | Body `{ bankName, accountNumber, accountName }` |
+| `POST` | `/payouts`                      | `requestPayout`          | `jastiper`         | To do  | Body `{ amount }`                               |
+| `GET`  | `/payouts`                      | `listMyPayouts`          | `jastiper`         | To do  | Caller's payout requests; cursor                |
+| `GET`  | `/admin/payouts`                | `listPayouts`            | `admin`            | To do  | Filter `status`; cursor                         |
+| `POST` | `/admin/payouts/{id}/paid`      | `markPayoutPaid`         | `admin`            | To do  | Body `{ reference }`: bank transfer reference   |
+| `POST` | `/admin/payouts/{id}/reject`    | `rejectPayout`           | `admin`            | To do  | Body `{ reason }`                               |
+
+Admin payout endpoints live in this package (tag `admin`) because they post to the ledger.
 
 ### Service methods for other modules
 
-| Method                          | Caller                       | Effect                                                |
-| ------------------------------- | ---------------------------- | ----------------------------------------------------- |
-| `Release(ctx, orderID)`         | Shipment, Dispute, release job | `escrow → jastiper_payable + platform_revenue`, `order.MarkReleased` |
-| `Refund(ctx, orderID, reason)`  | Dispute, jastiper cancel     | `escrow → buyer_refundable`, refund at gateway, `order.MarkRefunded` |
-
-### Jobs
-
-| Job                     | Scheduled                    | Action                                  |
-| ----------------------- | ---------------------------- | --------------------------------------- |
-| `payment.auto_release`  | N days after `shipped` (window open, decision 5) | If still `shipped`/`delivered`: release |
+| Method                                        | Caller                                   | Effect                                                |
+| --------------------------------------------- | ---------------------------------------- | ----------------------------------------------------- |
+| `Release(ctx, orderID)`                       | Shipment, Dispute, auto-release job      | `escrow → jastiper_payable + platform_revenue`, `order.MarkReleased`, notify jastiper |
+| `Refund(ctx, actor, orderID, reason)`         | Dispute, `cancelPaidOrder`               | `refund` posting, `Gateway.Refund`, `refund_paid` posting, `order.MarkRefunded`, `trip.Release` (through order), notify buyer |
+| `Ledger summaries` (`PlatformTotals`, …)      | Admin                                    | Escrow held, platform revenue, payable outstanding     |
 
 ## Sequence diagrams
 
 <details>
-<summary><strong style="font-size:1.1em;">Checkout</strong></summary>
+<summary><strong style="font-size:1.1em;">Checkout and settle</strong></summary>
 
 ---
 
@@ -214,72 +219,37 @@ actor Pembeli
 participant "SPA" as FE
 participant "payment.Handler" as H
 participant "payment.Service" as S
-participant "gateway (Midtrans)" as GW
+participant "Gateway (fake)" as GW
+participant "order.Service" as O
 database PostgreSQL as DB
 
 Pembeli -> FE : click "Bayar"
-FE -> H : POST /orders/{id}/payments (Bearer, buyer)
-H -> S : CreatePayment(buyerID, orderID)
-S -> DB : SELECT order FOR UPDATE
-alt not owner / status != approved / deadline passed
-  S --> H : ErrNotFound / ErrInvalidState
+FE -> H : POST /orders/{id}/payments
+H -> S : Checkout(buyerID, orderID)
+S -> DB : BEGIN; SELECT order FOR UPDATE
+alt not owner / status != approved
   H --> FE : 404 / 409
+else deadline passed
+  S -> O : ExpireUnpaid(orderID)
+  H --> FE : 409
 else pending payment exists
-  S --> H : existing checkout_token
+  H --> FE : 200 existing payment
 else
   S -> DB : INSERT payments (pending, amount = order.total)
-  S -> GW : Snap create transaction (order_id = payment.id, gross_amount)
-  GW --> S : token, redirect_url
-  S -> DB : UPDATE payments SET checkout_token
-  S --> H : checkout info
+  S -> GW : CreateCheckout(paymentID, amount)
+  GW --> S : token
+  H --> FE : 201 payment
 end
-H --> FE : 201 {token, redirectUrl}
-FE -> GW : open Snap popup, buyer pays
-@enduml
-```
 
-</details>
-
-<details>
-<summary><strong style="font-size:1.1em;">Payment callback (idempotent)</strong></summary>
-
----
-
-```plantuml
-@startuml
-participant "Midtrans" as GW
-participant "payment.Handler" as H
-participant "payment.Service" as S
-participant "order.Service" as O
-participant "notification.Service" as N
-database PostgreSQL as DB
-
-GW -> H : POST /payments/callback {order_id, transaction_id, status, signature_key, …}
-H -> S : HandleCallback(payload)
-S -> S : verify signature = SHA512(order_id + status_code + gross_amount + server_key)
-S -> DB : BEGIN
-S -> DB : INSERT payment_notifications … ON CONFLICT DO NOTHING
-alt conflict (already received)
-  S -> DB : COMMIT
-  S --> H : duplicate
-  H --> GW : 200
-else signature invalid
-  S -> DB : outcome = rejected; COMMIT
-  H --> GW : 401
-else status = settlement / capture
-  S -> DB : SELECT payment, order FOR UPDATE
-  S -> DB : UPDATE payments SET status = paid, paid_at
-  S -> DB : INSERT ledger_transactions (payment_received:<payment_id>)
-  S -> DB : INSERT ledger_entries (debit gateway_clearing, credit escrow)
-  S -> O : MarkPaid(orderID)
-  O -> DB : UPDATE orders, INSERT order_events
-  S -> N : Notify(buyer, jastiper: payment.received)
-  S -> DB : outcome = applied; COMMIT
-  H --> GW : 200
-else expire / cancel / deny
-  S -> DB : UPDATE payments SET status = expired/failed; COMMIT
-  H --> GW : 200
-end
+FE -> H : POST /payments/{id}/simulate
+H -> S : SimulatePaid(buyerID, paymentID)
+S -> DB : BEGIN; lock payment, order
+S -> DB : UPDATE payments SET status = paid, paid_at
+S -> DB : ledger payment_received:<payment_id>
+S -> O : MarkPaid(orderID)
+S -> DB : INSERT notifications (buyer, jastiper: payment.received)
+S -> DB : COMMIT
+H --> FE : 200 payment
 @enduml
 ```
 
@@ -299,58 +269,115 @@ database PostgreSQL as DB
 
 C -> S : Release(orderID)
 S -> DB : SELECT order FOR UPDATE
-S -> S : fee = floor(total × 5 / 100)\njastiper = total - fee
-S -> DB : INSERT ledger_transactions (idempotency_key = release:<order_id>)
-alt key already exists
-  S --> C : nil (already released)
+alt status != delivered
+  S --> C : ErrInvalidTransition
 else
+  S -> S : fee = floor(total × 5 / 100)\njastiper = total - fee
+  S -> DB : INSERT ledger_transactions (release:<order_id>)
   S -> DB : INSERT entries: debit escrow total,\ncredit jastiper_payable, credit platform_revenue
   S -> O : MarkReleased(orderID)
-  S -> DB : INSERT audit_logs (order.released)
+  S -> DB : INSERT notifications (jastiper: order.released)
   note right : constraint trigger checks\ndebits = credits at COMMIT
-  S --> C : nil
+  S --> C : order
 end
 @enduml
 ```
 
 </details>
 
-## To do
+<details>
+<summary><strong style="font-size:1.1em;">Refund to buyer</strong></summary>
 
-MVP scope is defined in [README.md](README.md#mvp-scope). The money rules (double-entry ledger, idempotent
-callbacks, one transaction with an order row lock) are **not** cut for the MVP.
+---
 
-### MVP
+```plantuml
+@startuml
+participant "Caller\n(dispute / cancelPaidOrder)" as C
+participant "payment.Service" as S
+participant "Gateway (fake)" as GW
+participant "order.Service" as O
+database PostgreSQL as DB
 
-- [ ] Midtrans sandbox account for development; before production, confirm that holding funds and paying jastipers
-      out manually is allowed (PLAN section 7, decision 1).
-- [ ] Migrations: `payments`, `payment_notifications`, `refunds`, the three ledger tables with append-only and
-      balance triggers, grants.
-  - [x] `payments` and the three ledger tables with append-only and balance triggers.
-  - [ ] `payment_notifications`, `refunds`, grants.
-- [ ] `gateway` interface, Midtrans adapter (Snap + notification signature), in-memory fake.
-  - [x] `Gateway` interface and fake gateway (`PAYMENT_GATEWAY=fake`).
-  - [ ] Midtrans Snap adapter and notification signature check (deferred for the demo).
-- [ ] `POST /orders/{id}/payments` (refused after `payment_deadline`) and `POST /payments/callback`.
-  - [x] `POST /orders/{id}/payments`, refused after `payment_deadline`.
-  - [x] `POST /payments/{id}/simulate` (fake mode only), settling through the same path the callback will use.
-  - [ ] `POST /payments/callback`.
-- [x] `Release(orderID)` with the 5% fee, called by Shipment on confirm receipt and by Dispute on a `release`
-      decision. Shipment calls it; the Dispute call comes with F06.
-- [ ] `Refund(orderID, reason)` from a dispute decision: ledger posting and a `refunds` row. The money goes back to
-      the buyer **manually through the Midtrans dashboard**; an admin then marks the refund `succeeded`.
-- [x] `GET /wallet` for the jastiper's balance.
-- [ ] Manual payouts: an admin transfers to the jastiper outside the system, using the F08 transactions list.
-- [ ] Integration tests: duplicate callbacks, concurrent release/refund, ledger balance.
-  - [x] Ledger balance, checkout after the deadline, and the payment → release flow (`integration_test.go`).
-  - [ ] Duplicate callbacks and concurrent release/refund.
+C -> S : Refund(actor, orderID, reason)
+S -> DB : SELECT order FOR UPDATE; SELECT paid payment
+S -> O : MarkRefunded(actor, orderID, reason)
+note right : checks the transition\n(paid by jastiper, disputed by admin)\nand releases trip capacity
+S -> DB : INSERT refunds (pending, amount = total)
+S -> DB : ledger refund:<order_id>\n(debit escrow, credit buyer_refundable)
+S -> GW : Refund(paymentID, amount)
+alt succeeded
+  S -> DB : refunds succeeded, provider_refund_id
+  S -> DB : ledger refund_paid:<refund_id>\n(debit buyer_refundable, credit gateway_clearing)
+else failed
+  S -> DB : refunds failed, failure_reason
+  note right : order stays refunded; the debt to the\nbuyer stays in buyer_refundable for an\nadmin to settle
+end
+S -> DB : INSERT audit_logs (order.refunded), notifications (buyer)
+S --> C : order
+@enduml
+```
 
-### Post-MVP
+</details>
 
-- [ ] Decide the auto-release window (decision 5) and add the `payment.auto_release` job (needs the worker). In the
-      MVP, a buyer who never confirms is handled by an admin through a dispute.
-- [ ] Refund through the Midtrans refund API instead of the dashboard.
-- [ ] Refund when the jastiper cancels after payment (`paid → refunded`); handled by admin/dispute in the MVP.
-- [ ] `payout_accounts`, `payouts`, and the `payout` ledger posting once decision 1 is made.
-- [ ] `GET /wallet/transactions`.
-- [ ] Reconciliation job for `pending` payments (Midtrans status API).
+<details>
+<summary><strong style="font-size:1.1em;">Payout</strong></summary>
+
+---
+
+```plantuml
+@startuml
+actor Jastiper
+actor Admin
+participant "payment.Service" as S
+database PostgreSQL as DB
+
+Jastiper -> S : POST /payouts {amount}
+S -> DB : BEGIN; SELECT payout_accounts WHERE user_id FOR UPDATE
+alt no payout account
+  S --> Jastiper : 409
+else open request exists or amount > available
+  S --> Jastiper : 409
+else
+  S -> DB : INSERT payouts (requested, bank details copied)
+  S -> DB : COMMIT
+  S --> Jastiper : 201 payout
+end
+
+Admin -> S : POST /admin/payouts/{id}/paid {reference}
+S -> DB : BEGIN; SELECT payout FOR UPDATE
+alt status != requested
+  S --> Admin : 409
+else
+  S -> DB : ledger payout:<payout_id>\n(debit jastiper_payable, credit gateway_clearing)
+  S -> DB : UPDATE payouts SET status = paid, reference, decided_by
+  S -> DB : INSERT audit_logs (payout.paid), notifications (jastiper: payout.paid)
+  S -> DB : COMMIT
+  S --> Admin : 200 payout
+end
+@enduml
+```
+
+</details>
+
+## Remaining work
+
+Done:
+
+- [x] `payments` and the three ledger tables with append-only and balance triggers.
+- [x] `Gateway` interface and fake gateway.
+- [x] `POST /orders/{id}/payments` (refused after the deadline), `POST /payments/{id}/simulate`.
+- [x] `Release(orderID)` with the 5% fee, called by Shipment.
+- [x] `GET /wallet` balance.
+- [x] Integration tests: ledger balance, checkout after the deadline, payment → release.
+
+Remaining:
+
+- [ ] `Gateway.Refund` (fake succeeds), `refunds` table, `Refund(...)`, `POST /orders/{id}/cancel-paid`.
+- [ ] `payout_accounts` and `payouts` tables, payout account and payout endpoints, admin payout endpoints.
+- [ ] `GET /wallet` gains `inEscrow` and `pendingPayout`; `GET /wallet/transactions`.
+- [ ] Notifications (`payment.received`, `order.released`, `order.refunded`, `payout.paid`, `payout.rejected`) and
+      audit log rows for releases, refunds, and payouts.
+- [ ] Job `orders.auto_release`: for `shipped` orders shipped more than 7 days ago, `order.MarkDelivered(system)`
+      then `Release`, one transaction per order.
+- [ ] Ledger summaries for F08 stats.
+- [ ] Integration tests: refund postings, payout postings, concurrent release and refund on one order.

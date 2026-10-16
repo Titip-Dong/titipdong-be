@@ -4,7 +4,25 @@ Backend for TITIP DONG, an escrow-backed jastip platform. A Go modular monolith:
 PostgreSQL via pgx and sqlc, goose migrations. Deployed to a two-node AKS cluster.
 
 - Product and architecture: `titipdong-docs/PLAN.md`
-- Backend implementation plan, module status, and open decisions: [`docs/PLAN.md`](docs/PLAN.md)
+- Backend architecture, scope, and status: [`docs/PLAN.md`](docs/PLAN.md)
+- Per-module documentation (rules, endpoints, flows): [`docs/features/`](docs/features/README.md)
+- Database schema: [`docs/DATABASE.md`](docs/DATABASE.md)
+
+## Features
+
+| Module               | What it does                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------- |
+| F01 Auth & User      | Buyer and jastiper accounts, JWT access tokens with rotating refresh cookies, profile, account suspension |
+| F02 Trip & Catalog   | Jastipers open trips with a destination, dates, deadline, and item capacity, plus a catalog of popular items |
+| F03 Order            | Buyers request items; jastipers approve with a price or reject; a state machine guards every step    |
+| F04 Payment & Escrow | Payment into escrow (fake gateway), double-entry ledger, release with a 5% platform fee, refunds, payouts |
+| F05 Shipment         | COD or courier handover with proof photo; buyer confirmation releases the funds                       |
+| F06 Dispute          | Buyers dispute shipped orders with evidence and messages; admins decide refund or release            |
+| F07 Notification     | In-app notifications for every step, polled by the frontend                                         |
+| F08 Admin            | Dashboard stats, orders, ledger transactions, users, payouts, audit log                              |
+
+Background jobs inside the API cancel unpaid orders after 24 hours, release funds 7 days after shipping, and close
+expired trips. Each module's status is in [`docs/features/`](docs/features/README.md).
 
 ## Requirements
 
@@ -74,6 +92,9 @@ Run `make` to list every command. The common ones:
   client from it (`pnpm api` in `titipdong-fe`).
 - `GET /docs`: interactive API docs.
 - `GET /health`: liveness probe.
+- Demo accounts: `make seed` creates `jastiper@titipdong.test`, `buyer@titipdong.test`, and `admin@titipdong.test`
+  (password `demo12345`).
+- Payments use a fake gateway: after `POST /orders/{id}/payments`, call `POST /payments/{id}/simulate` to pay.
 
 Errors use RFC 9457 `application/problem+json`. Protected endpoints take `Authorization: Bearer <access token>`.
 
@@ -130,8 +151,7 @@ the rules are in [`docs/PLAN.md`](docs/PLAN.md#2-architecture).
 ## Database design
 
 The full schema for every module (tables, constraints, indexes, and the double-entry ledger) is in
-[`docs/DATABASE.md`](docs/DATABASE.md). Only `users` exists so far; each module adds its tables through a migration
-when it is implemented.
+[`docs/DATABASE.md`](docs/DATABASE.md), which marks the tables that do not have a migration yet.
 
 ```mermaid
 erDiagram
@@ -152,10 +172,10 @@ erDiagram
 | F01 Auth & User      | `users`, `refresh_tokens`                                                                  |
 | F02 Trip & Catalog   | `trips`, `trip_items`                                                                      |
 | F03 Order            | `orders`, `order_events`                                                                   |
-| F04 Payment & Escrow | `payments`, `payment_notifications`, `refunds`, `ledger_*`, `payouts`, `payout_accounts`   |
+| F04 Payment & Escrow | `payments`, `refunds`, `ledger_*`, `payout_accounts`, `payouts`                            |
 | F05 Shipment         | `shipments`                                                                                |
 | F06 Dispute          | `disputes`, `dispute_evidence`, `dispute_messages`                                         |
-| F07 Notification     | `notifications`, `outbound_emails`                                                         |
+| F07 Notification     | `notifications`                                                                            |
 | Platform             | `audit_logs`, `uploads`                                                                    |
 
 Key rules: money is `BIGINT` rupiah, statuses are `TEXT` with `CHECK`, the ledger and audit log are append-only, and
