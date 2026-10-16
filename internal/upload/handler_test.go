@@ -54,7 +54,7 @@ func TestCreateUploadEndpoint(t *testing.T) {
 			if tc.token != "" {
 				req.Header.Set("Authorization", "Bearer "+tc.token)
 			}
-			res, err := app.Test(req)
+			res, err := app.Test(req, -1)
 			if err != nil {
 				t.Fatal(err)
 			}
