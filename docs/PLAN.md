@@ -19,8 +19,8 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: database       | Done. pgx v5 pool, sqlc, goose migrations embedded and applied at startup under an advisory lock    |
 | Platform: transactions   | Done. `database.WithTx` carries the transaction in `context.Context`                                |
 | Platform: observability  | Done. JSON logs with request ID, `/metrics`, local Prometheus/Grafana/Loki/Alloy stack              |
-| Platform: runtime        | Done. Readiness probe, graceful shutdown, background job runner, OpenAPI export                     |
-| Platform: remaining      | To do. Blob uploads, audit log, CI checks                                                           |
+| Platform: runtime        | Done. Readiness probe, graceful shutdown, background job runner, OpenAPI export, audit log writer   |
+| Platform: remaining      | To do. Blob uploads, CI checks                                                                      |
 | F01 Auth & User          | Partial. Register, login, refresh, logout, `GET /me` done; profile, account status, `create-admin` to do |
 | F02 Trip & Catalog       | Partial. Create, list, get, close, my trips done; capacity, edit, cancel, catalog to do             |
 | F03 Order                | Partial. State machine, request, approve, reject, cancel done; capacity, photo, notifications, per-trip inbox to do |
@@ -140,7 +140,7 @@ The service that starts a use case owns the transaction (for example `shipment.C
 | Item               | State | Design                                                                                                           |
 | ------------------ | ----- | ---------------------------------------------------------------------------------------------------------------- |
 | Config             | Done  | Env loader in `platform/config`; `.env` read in development, real env vars win                                    |
-| Logging            | Done  | `log/slog` JSON; request middleware with `X-Request-ID`, status, and latency                                      |
+| Logging            | Done  | `log/slog` JSON; request middleware with `X-Request-ID` (also in the context, `logging.RequestID`), status, latency |
 | CORS               | Done  | Allow-list from `CORS_ORIGINS`, `Allow-Credentials: true` for the refresh cookie                                   |
 | Transactions       | Done  | `database.WithTx` / `database.Conn` (section 3.3)                                                                 |
 | Metrics            | Done  | `/metrics` (Prometheus): request count and latency by route and status, Go runtime                                |
@@ -150,7 +150,7 @@ The service that starts a use case owns the transaction (for example `shipment.C
 | Background jobs    | Done  | `platform/jobs`: a ticker loop started by `main`; each job runs under `pg_try_advisory_lock` and is idempotent; runs are counted in `background_jobs_total` |
 | Blob storage       | To do | `platform/blob` on `azblob`: SAS URLs for upload (write) and read, private container; Azurite in `compose.yaml`   |
 | Uploads            | To do | `uploads` table and `POST /uploads`; modules attach an upload by ID after checking owner, purpose, and that the blob exists |
-| Audit log          | To do | `platform/audit` writes `audit_logs` inside money and admin transactions; F08 reads it                            |
+| Audit log          | Done  | `platform/audit` writes `audit_logs` (with the request ID) inside money and admin transactions; F08 reads it      |
 | Clock              | Done  | Services that use deadlines take `now func() time.Time` so tests control time                                     |
 
 ### Background jobs

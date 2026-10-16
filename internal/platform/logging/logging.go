@@ -2,6 +2,7 @@
 package logging
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -41,6 +42,14 @@ func newLogger(writer io.Writer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(writer, &slog.HandlerOptions{Level: levelFromEnvironment()}))
 }
 
+type requestIDKey struct{}
+
+// RequestID returns the ID RequestMiddleware assigned to the current request, or "".
+func RequestID(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}
+
 // RequestMiddleware emits one structured event for each application request.
 // It excludes health and metrics scrapes to keep logs useful, and never records
 // headers, request bodies, credentials, or personally identifiable data.
@@ -52,6 +61,7 @@ func RequestMiddleware(logger *slog.Logger) fiber.Handler {
 
 		requestID := uuid.NewString()
 		c.Locals("request_id", requestID)
+		c.SetUserContext(context.WithValue(c.UserContext(), requestIDKey{}, requestID))
 		c.Set("X-Request-ID", requestID)
 		started := time.Now()
 

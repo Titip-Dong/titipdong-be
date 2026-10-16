@@ -16,7 +16,9 @@ func TestRequestMiddlewareLogsSafeStructuredFields(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&output, nil))
 	app := fiber.New()
 	app.Use(RequestMiddleware(logger))
+	var seenID string
 	app.Post("/example", func(c *fiber.Ctx) error {
+		seenID = RequestID(c.UserContext())
 		return c.SendStatus(fiber.StatusCreated)
 	})
 
@@ -39,5 +41,8 @@ func TestRequestMiddlewareLogsSafeStructuredFields(t *testing.T) {
 	}
 	if res.Header.Get("X-Request-ID") == "" {
 		t.Error("X-Request-ID header is empty")
+	}
+	if seenID != res.Header.Get("X-Request-ID") {
+		t.Errorf("RequestID(ctx) = %q, want the X-Request-ID header %q", seenID, res.Header.Get("X-Request-ID"))
 	}
 }

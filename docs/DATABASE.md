@@ -717,28 +717,31 @@ Rows are inserted by `notification.Notify` on the transaction of the change that
 
 ## 10. Platform
 
-### `audit_logs` (to add)
+### `audit_logs` (exists)
 
 Append-only record of sensitive actions: anything that moves money, dispute decisions, user suspension, and admin
-actions. Written through `platform/audit` inside the same transaction as the action.
+actions. Written through `platform/audit` (`audit.Writer.Write`) inside the same transaction as the action; the
+request ID comes from the request context.
 
 ```sql
 CREATE TABLE audit_logs (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    actor_id    UUID REFERENCES users (id),            -- NULL for system actions
+    actor_id    UUID REFERENCES users (id),            -- NULL exactly for system actions
     actor_type  TEXT NOT NULL CHECK (actor_type IN ('buyer', 'jastiper', 'admin', 'system')),
-    action      TEXT NOT NULL,                          -- e.g. order.released, dispute.decided, user.suspended
-    target_type TEXT NOT NULL,                          -- e.g. order, dispute, user
-    target_id   TEXT NOT NULL,
+    action      TEXT NOT NULL CHECK (char_length(action) <= 64),       -- e.g. order.released, user.suspended
+    target_type TEXT NOT NULL CHECK (char_length(target_type) <= 32),  -- e.g. order, dispute, payout, user
+    target_id   TEXT NOT NULL CHECK (char_length(target_id) <= 64),
     metadata    JSONB NOT NULL DEFAULT '{}',
     request_id  TEXT,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((actor_type = 'system') = (actor_id IS NULL))
 );
 CREATE INDEX audit_logs_target_idx ON audit_logs (target_type, target_id, id);
-CREATE INDEX audit_logs_created_idx ON audit_logs (created_at DESC);
+CREATE INDEX audit_logs_actor_idx ON audit_logs (actor_id, id) WHERE actor_id IS NOT NULL;
+CREATE INDEX audit_logs_created_idx ON audit_logs (created_at DESC, id DESC);
 ```
 
-Protected like the ledger: a trigger rejects `UPDATE` and `DELETE`.
+Protected like the ledger: the `ledger_append_only` trigger rejects `UPDATE` and `DELETE`.
 
 ### `uploads` (to add)
 
