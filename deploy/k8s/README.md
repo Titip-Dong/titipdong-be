@@ -59,7 +59,35 @@ kubectl rollout status deployment/titipdong-api --namespace titipdong
 
 The Dockerfile uses Docker Buildx target-platform arguments so that this command compiles the Go binary for `linux/amd64`.
 
-## 3. Deploy and verify
+## 3. Secrets and configuration
+
+The Deployment reads its configuration from one Secret and one optional ConfigMap in the `titipdong` namespace.
+
+| Source                         | Key                               | Required | Notes                                                       |
+| ------------------------------ | --------------------------------- | -------- | ----------------------------------------------------------- |
+| Secret `titipdong-api-secrets` | `DATABASE_URL`                    | yes      | Azure PostgreSQL, `sslmode=require`                          |
+| Secret `titipdong-api-secrets` | `JWT_SECRET`                      | yes      | At least 32 characters (`openssl rand -base64 32`)          |
+| Secret `titipdong-api-secrets` | `AZURE_STORAGE_CONNECTION_STRING` | no       | Storage account connection string with an account key; uploads return 503 without it |
+| ConfigMap `titipdong-api-config` | `CORS_ORIGINS`                  | no       | Comma-separated frontend origins; defaults to `http://localhost:5173` |
+
+`PAYMENT_GATEWAY` is fixed to `fake` in the manifest, and `COOKIE_SECURE` keeps its secure default. On start, the API
+creates the private `uploads` container and sets the storage account's CORS rules to `CORS_ORIGINS`.
+
+```bash
+kubectl create secret generic titipdong-api-secrets --namespace titipdong \
+  --from-literal=DATABASE_URL="$DATABASE_URL" \
+  --from-literal=JWT_SECRET="$JWT_SECRET" \
+  --from-literal=AZURE_STORAGE_CONNECTION_STRING="$AZURE_STORAGE_CONNECTION_STRING" \
+  --dry-run=client --output yaml | kubectl apply -f -
+
+kubectl create configmap titipdong-api-config --namespace titipdong \
+  --from-literal=CORS_ORIGINS="https://<frontend-domain>" \
+  --dry-run=client --output yaml | kubectl apply -f -
+```
+
+Changing either one requires `kubectl rollout restart deployment/titipdong-api --namespace titipdong`.
+
+## 4. Deploy and verify
 
 ```bash
 kubectl apply -f titipdong-be/deploy/k8s/namespace.yaml
@@ -79,6 +107,7 @@ When `EXTERNAL-IP` is assigned, in a second terminal:
 
 ```bash
 curl http://<external-ip>/health
+curl http://<external-ip>/health/ready   # 503 while the database is unreachable
 ```
 
 Expected response:

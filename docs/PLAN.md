@@ -202,7 +202,7 @@ newest one Azurite 3.37 accepts.
 
 - **Go 1.26** (`go.mod`, Dockerfile, CI).
 - **Makefile** is the single entry point. sqlc, goose, and golangci-lint are pinned there and run through
-  `go run pkg@version`. CI calls `make check` rather than repeating the commands.
+  `go run pkg@version`. CI (`.github/workflows/check.yml`) calls `make check` rather than repeating the commands.
 - **Local dependencies** run from `compose.yaml`: PostgreSQL, the API, and Azurite.
 - **sqlc**: one entry in `sqlc.yaml` (`db/queries/` → `internal/db`). Generated code is committed; `make check` runs
   `sqlc diff` to catch drift.
@@ -221,14 +221,15 @@ newest one Azurite 3.37 accepts.
 
 | Item                                 | State | Notes                                                                                   |
 | ------------------------------------ | ----- | --------------------------------------------------------------------------------------- |
-| `main` → test → ACR image → AKS rollout | Done | `.github/workflows/deploy-aks.yml`, image tagged with the commit SHA                     |
+| `main` → check → ACR image → AKS rollout | Done | `.github/workflows/deploy-aks.yml`, image tagged with the commit SHA                    |
+| Check workflow on every non-`main` push | Done | `.github/workflows/check.yml`: `make check`, integration tests with PostgreSQL and Azurite services, OpenAPI artifact; reused by the deploy workflow |
 | Secrets for `DATABASE_URL`, `JWT_SECRET` | Done | Secret `titipdong-api-secrets`, wired with `secretKeyRef`                             |
 | 2 replicas with anti-affinity        | Done  | `deploy/k8s/deployment.yaml`                                                             |
-| PR workflow running `make check`     | To do | Also uploads the OpenAPI export as an artifact for the FE                               |
 | Readiness probe on `/health/ready`, `preStop` | Done | Graceful rollouts without dropped requests                     |
-| Resource requests and limits         | To do |                                                                                         |
-| Blob Storage account                 | To do | `AZURE_STORAGE_CONNECTION_STRING` in the same Secret; the API creates the container and CORS rules on start |
-| Remaining env in the Deployment      | To do | `CORS_ORIGINS`, `COOKIE_SECURE`, `PAYMENT_GATEWAY`, blob settings                       |
+| Resource requests and limits         | Done  | 100m CPU / 128 Mi requested, 256 Mi memory limit                                         |
+| Runtime env in the Deployment        | Done  | `PAYMENT_GATEWAY=fake`; optional `AZURE_STORAGE_CONNECTION_STRING` (Secret) and `CORS_ORIGINS` (ConfigMap `titipdong-api-config`) |
+| Blob Storage account in Azure        | To do | Create the storage account and add its connection string to the Secret (`deploy/k8s/README.md`) |
+| Frontend origin                      | To do | Set `CORS_ORIGINS` in the ConfigMap once the FE domain exists                            |
 
 Migrations run at API startup under an advisory lock, which is safe with several replicas.
 

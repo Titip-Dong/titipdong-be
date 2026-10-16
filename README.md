@@ -202,6 +202,7 @@ The next `make run` applies the migration. Never edit files under `internal/db/`
 
 ## Deployment
 
-Pushing to `main` runs `.github/workflows/deploy-aks.yml`: tests, a `linux/amd64` image pushed to Azure Container
-Registry tagged with the commit SHA, then a rolling update of the `titipdong-api` Deployment. Manual steps are in
-[`deploy/k8s/README.md`](deploy/k8s/README.md).
+Pushing any branch other than `main` runs `.github/workflows/check.yml` (`make check` plus integration tests against
+PostgreSQL and Azurite). Pushing to `main` runs `.github/workflows/deploy-aks.yml`: the same check, a `linux/amd64`
+image pushed to Azure Container Registry tagged with the commit SHA, then a rolling update of the `titipdong-api`
+Deployment. Manual steps, secrets, and configuration are in [`deploy/k8s/README.md`](deploy/k8s/README.md).

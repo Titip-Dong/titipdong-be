@@ -48,6 +48,27 @@ spec:
                 secretKeyRef:
                   name: titipdong-api-secrets
                   key: JWT_SECRET
+            # Uploads stay disabled until this key exists in the Secret.
+            - name: AZURE_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: titipdong-api-secrets
+                  key: AZURE_STORAGE_CONNECTION_STRING
+                  optional: true
+            - name: CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: titipdong-api-config
+                  key: CORS_ORIGINS
+                  optional: true
+            - name: PAYMENT_GATEWAY
+              value: fake
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
           lifecycle:
             preStop:
               exec:
