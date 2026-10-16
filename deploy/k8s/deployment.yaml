@@ -22,6 +22,7 @@ spec:
         app.kubernetes.io/name: titipdong-api
         app.kubernetes.io/part-of: titipdong
     spec:
+      terminationGracePeriodSeconds: 30
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -47,9 +48,35 @@ spec:
                 secretKeyRef:
                   name: titipdong-api-secrets
                   key: JWT_SECRET
+            # Uploads stay disabled until this key exists in the Secret.
+            - name: AZURE_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: titipdong-api-secrets
+                  key: AZURE_STORAGE_CONNECTION_STRING
+                  optional: true
+            - name: CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: titipdong-api-config
+                  key: CORS_ORIGINS
+                  optional: true
+            - name: PAYMENT_GATEWAY
+              value: fake
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          lifecycle:
+            preStop:
+              exec:
+                # Let the Service stop routing to this pod before shutdown starts.
+                command: ["sleep", "5"]
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health/ready
               port: http
           livenessProbe:
             httpGet:

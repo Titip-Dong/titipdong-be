@@ -52,7 +52,7 @@ func do(t *testing.T, app *fiber.App, method, path, token, body string) (int, ma
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	res, err := app.Test(req)
+	res, err := app.Test(req, -1)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}

@@ -10,6 +10,18 @@ import (
 	"github.com/google/uuid"
 )
 
+type AuditLog struct {
+	ID         int64
+	ActorID    *uuid.UUID
+	ActorType  string
+	Action     string
+	TargetType string
+	TargetID   string
+	Metadata   []byte
+	RequestID  *string
+	CreatedAt  time.Time
+}
+
 type LedgerAccount struct {
 	ID        uuid.UUID
 	Kind      string
@@ -120,6 +132,18 @@ type Trip struct {
 	Status             string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+type Upload struct {
+	ID          uuid.UUID
+	OwnerID     uuid.UUID
+	Purpose     string
+	ObjectKey   string
+	ContentType string
+	SizeBytes   int64
+	Status      string
+	CreatedAt   time.Time
+	AttachedAt  *time.Time
 }
 
 type User struct {

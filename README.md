@@ -4,7 +4,25 @@ Backend for TITIP DONG, an escrow-backed jastip platform. A Go modular monolith:
 PostgreSQL via pgx and sqlc, goose migrations. Deployed to a two-node AKS cluster.
 
 - Product and architecture: `titipdong-docs/PLAN.md`
-- Backend implementation plan, module status, and open decisions: [`docs/PLAN.md`](docs/PLAN.md)
+- Backend architecture, scope, and status: [`docs/PLAN.md`](docs/PLAN.md)
+- Per-module documentation (rules, endpoints, flows): [`docs/features/`](docs/features/README.md)
+- Database schema: [`docs/DATABASE.md`](docs/DATABASE.md)
+
+## Features
+
+| Module               | What it does                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------- |
+| F01 Auth & User      | Buyer and jastiper accounts, JWT access tokens with rotating refresh cookies, profile, account suspension |
+| F02 Trip & Catalog   | Jastipers open trips with a destination, dates, deadline, and item capacity, plus a catalog of popular items |
+| F03 Order            | Buyers request items; jastipers approve with a price or reject; a state machine guards every step    |
+| F04 Payment & Escrow | Payment into escrow (fake gateway), double-entry ledger, release with a 5% platform fee, refunds, payouts |
+| F05 Shipment         | COD or courier handover with proof photo; buyer confirmation releases the funds                       |
+| F06 Dispute          | Buyers dispute shipped orders with evidence and messages; admins decide refund or release            |
+| F07 Notification     | In-app notifications for every step, polled by the frontend                                         |
+| F08 Admin            | Dashboard stats, orders, ledger transactions, users, payouts, audit log                              |
+
+Background jobs inside the API cancel unpaid orders after 24 hours, release funds 7 days after shipping, and close
+expired trips. Each module's status is in [`docs/features/`](docs/features/README.md).
 
 ## Requirements
 
@@ -17,26 +35,26 @@ Nothing else needs installing: `make` runs sqlc, goose, and golangci-lint at pin
 
 ## Run locally
 
-1. Start the complete local application (PostgreSQL 16 and API) defined in `compose.yaml`:
-
-   ```sh
-   make db-up      # builds API and waits for PostgreSQL and API to be healthy
-   ```
-
-   If port 5432 is already taken (for example by a Homebrew PostgreSQL), run `POSTGRES_PORT=5433 make db-up` and use
-   port 5433 in `DATABASE_URL`.
-
-2. Configure the environment. `.env` is git-ignored and read on startup; real environment variables take
-   precedence.
+1. Configure the environment. `.env` is git-ignored; Compose and the API both read it, and real environment
+   variables take precedence.
 
    ```sh
    cp .env.example .env
    # set JWT_SECRET to the output of: openssl rand -base64 32
-   # DATABASE_URL already matches compose.yaml
+   # DATABASE_URL, POSTGRES_* and AZURE_STORAGE_CONNECTION_STRING already match compose.yaml
    ```
 
-3. The API is already running in Docker at `http://localhost:8080`; pending
-   migrations are applied on startup. To follow its JSON logs:
+   PostgreSQL is published on port 5433 so it does not clash with a local PostgreSQL on 5432.
+
+2. Start the complete local application defined in `compose.yaml`: PostgreSQL 16, Azurite (Blob Storage emulator
+   on port 10000), and the API.
+
+   ```sh
+   make db-up      # rebuilds the API image and waits until everything is healthy
+   make seed       # demo accounts
+   ```
+
+3. The API runs at `http://localhost:8080`; pending migrations are applied on startup. To follow its JSON logs:
 
    ```sh
    docker compose logs -f api
@@ -50,6 +68,12 @@ Nothing else needs installing: `make` runs sqlc, goose, and golangci-lint at pin
 | `DATABASE_URL` | yes      | PostgreSQL connection string                 |
 | `JWT_SECRET`   | yes      | HMAC key for access tokens, ≥ 32 characters  |
 | `PORT`         | no       | Listen port, default `8080`                  |
+| `CORS_ORIGINS` | no       | Comma-separated frontend origins, default `http://localhost:5173`; also applied to Blob Storage CORS |
+| `COOKIE_SECURE`| no       | `false` for plain-HTTP local development; default `true` |
+| `PAYMENT_GATEWAY` | no    | Only `fake` is supported                     |
+| `AZURE_STORAGE_CONNECTION_STRING` | no | Blob Storage (or Azurite) with an account key; uploads are disabled when empty |
+| `BLOB_CONTAINER` | no     | Private container for uploads, default `uploads` |
+| `BLOB_PUBLIC_URL` | no    | Scheme and host browsers use for signed URLs, when it differs from the connection string (Azurite in Docker) |
 
 ## Commands
 
@@ -72,8 +96,13 @@ Run `make` to list every command. The common ones:
 
 - `GET /openapi.json`: the OpenAPI 3.1 contract, generated from the Huma operations. The frontend generates its
   client from it (`pnpm api` in `titipdong-fe`).
+  `make openapi` writes the same spec to `openapi.json` without a database or a running API.
 - `GET /docs`: interactive API docs.
 - `GET /health`: liveness probe.
+- `GET /health/ready`: readiness probe; 503 while PostgreSQL is unreachable.
+- Demo accounts: `make seed` creates `jastiper@titipdong.test`, `buyer@titipdong.test`, and `admin@titipdong.test`
+  (password `demo12345`).
+- Payments use a fake gateway: after `POST /orders/{id}/payments`, call `POST /payments/{id}/simulate` to pay.
 
 Errors use RFC 9457 `application/problem+json`. Protected endpoints take `Authorization: Bearer <access token>`.
 
@@ -130,8 +159,7 @@ the rules are in [`docs/PLAN.md`](docs/PLAN.md#2-architecture).
 ## Database design
 
 The full schema for every module (tables, constraints, indexes, and the double-entry ledger) is in
-[`docs/DATABASE.md`](docs/DATABASE.md). Only `users` exists so far; each module adds its tables through a migration
-when it is implemented.
+[`docs/DATABASE.md`](docs/DATABASE.md), which marks the tables that do not have a migration yet.
 
 ```mermaid
 erDiagram
@@ -152,10 +180,10 @@ erDiagram
 | F01 Auth & User      | `users`, `refresh_tokens`                                                                  |
 | F02 Trip & Catalog   | `trips`, `trip_items`                                                                      |
 | F03 Order            | `orders`, `order_events`                                                                   |
-| F04 Payment & Escrow | `payments`, `payment_notifications`, `refunds`, `ledger_*`, `payouts`, `payout_accounts`   |
+| F04 Payment & Escrow | `payments`, `refunds`, `ledger_*`, `payout_accounts`, `payouts`                            |
 | F05 Shipment         | `shipments`                                                                                |
 | F06 Dispute          | `disputes`, `dispute_evidence`, `dispute_messages`                                         |
-| F07 Notification     | `notifications`, `outbound_emails`                                                         |
+| F07 Notification     | `notifications`                                                                            |
 | Platform             | `audit_logs`, `uploads`                                                                    |
 
 Key rules: money is `BIGINT` rupiah, statuses are `TEXT` with `CHECK`, the ledger and audit log are append-only, and
@@ -174,6 +202,7 @@ The next `make run` applies the migration. Never edit files under `internal/db/`
 
 ## Deployment
 
-Pushing to `main` runs `.github/workflows/deploy-aks.yml`: tests, a `linux/amd64` image pushed to Azure Container
-Registry tagged with the commit SHA, then a rolling update of the `titipdong-api` Deployment. Manual steps are in
-[`deploy/k8s/README.md`](deploy/k8s/README.md).
+Pushing any branch other than `main` runs `.github/workflows/check.yml` (`make check` plus integration tests against
+PostgreSQL and Azurite). Pushing to `main` runs `.github/workflows/deploy-aks.yml`: the same check, a `linux/amd64`
+image pushed to Azure Container Registry tagged with the commit SHA, then a rolling update of the `titipdong-api`
+Deployment. Manual steps, secrets, and configuration are in [`deploy/k8s/README.md`](deploy/k8s/README.md).

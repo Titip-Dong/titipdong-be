@@ -14,27 +14,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION: "1.26"
   IMAGE_NAME: titipdong-api
   KUBERNETES_NAMESPACE: titipdong
   KUBERNETES_DEPLOYMENT: titipdong-api
 
 jobs:
   test:
-    name: Test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-
-      - name: Run backend tests
-        run: go test ./...
+    name: Check
+    uses: ./.github/workflows/check.yml
 
   build:
     name: Build and push image
@@ -80,7 +67,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Set AKS context
-        uses: azure/aks-set-context@v3
+        uses: azure/aks-set-context@v4
         with:
           resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
           cluster-name: ${{ vars.AKS_CLUSTER_NAME }}

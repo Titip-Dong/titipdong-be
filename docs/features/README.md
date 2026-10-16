@@ -1,73 +1,34 @@
 # Feature documentation
 
-One file per backend module: overview, business rules, database tables, endpoints, PlantUML sequence diagrams, and a
-to-do list. Endpoint and table designs for modules that are not built yet are plans; once a module ships, its
-migration and the generated OpenAPI spec (`/openapi.json`) are the source of truth and the file is updated to match.
+One file per backend module: overview, business rules, database tables, endpoints, sequence diagrams, and remaining
+work. For a module that is already built, its migration and the generated OpenAPI spec (`/openapi.json`) are the
+source of truth, and its file is kept in sync with them.
 
-| ID  | Module                              | Owner  | Status                                        |
-| --- | ----------------------------------- | ------ | --------------------------------------------- |
-| F01 | [Auth & User](auth.md)              | Carlo  | Partial: register, login, refresh, logout, `GET /me`, middleware |
-| F02 | [Trip & Catalog](trip.md)           | Carlo  | MVP: create, list, get, close, my trips       |
-| F03 | [Order](order.md)                   | Alfian | MVP: state machine, request, approve/reject/cancel |
-| F04 | [Payment & Escrow](payment.md)      | Barru  | Prototype: fake gateway, ledger, release, wallet |
-| F05 | [Shipment](shipment.md)             | Alfian | MVP: ship, get, confirm receipt → release     |
-| F06 | [Dispute](dispute.md)               | Barru  | Not started                                   |
-| F07 | [Notification](notification.md)     | Azfa   | Not started                                   |
-| F08 | [Admin](admin.md)                   | Azfa   | Not started                                   |
+| ID  | Module                              | Package                 | Status                                                                 |
+| --- | ----------------------------------- | ----------------------- | ---------------------------------------------------------------------- |
+| F01 | [Auth & User](auth.md)              | `internal/auth`         | Partial: session done; profile, account status, `create-admin` to do   |
+| F02 | [Trip & Catalog](trip.md)           | `internal/trip`         | Partial: core done; capacity, edit, cancel, catalog to do              |
+| F03 | [Order](order.md)                   | `internal/order`        | Partial: state machine done; capacity, photo, notifications to do      |
+| F04 | [Payment & Escrow](payment.md)      | `internal/payment`      | Partial: checkout, ledger, release done; refunds, payouts to do        |
+| F05 | [Shipment](shipment.md)             | `internal/shipment`     | Partial: ship and confirm done; proof photo to do                      |
+| F06 | [Dispute](dispute.md)               | `internal/dispute`      | To do                                                                  |
+| F07 | [Notification](notification.md)     | `internal/notification` | To do                                                                  |
+| F08 | [Admin](admin.md)                   | `internal/admin`        | To do                                                                  |
 
-## MVP scope
+Scope decisions (fake payment gateway, in-process jobs, Azure Blob uploads, in-app notifications only) and what is
+deliberately left out are in [PLAN.md](../PLAN.md#2-scope-decisions).
 
-The MVP is the smallest set of features that runs the main business flow end to end with real money through
-Midtrans: `requested → approved → paid → shipped → delivered → released`, plus the exits when something goes wrong
-(reject, cancel before payment, dispute → refund). Each feature file splits its to-do list into **MVP** and
-**Post-MVP**.
+## Business flow
 
-Cut from the MVP as a whole:
+The main flow runs `requested → approved → paid → shipped → delivered → released`, with these exits:
 
-- **Worker and River.** No background jobs: deadlines are checked when data is read or acted on, notifications are
-  inserted directly in the caller's transaction, and there is no auto-release (admins release through disputes).
-- **Uploads / Blob Storage.** Product links, tracking numbers, and text instead of photos.
-- **Trip capacity.** The unit is undecided; jastipers close a trip manually when full.
+- The jastiper rejects a request, or the buyer cancels before paying.
+- The payment deadline passes and the order is cancelled.
+- The jastiper cancels after payment, and the buyer is refunded.
+- The buyer opens a dispute, and an admin decides between refund and release.
+- The buyer never confirms receipt, and the funds are released automatically after 7 days.
 
-Not cut: the money rules (double-entry ledger, idempotent payment callbacks, one transaction with an order row lock)
-and the full order state machine.
-
-### Platform work for the MVP
-
-| MVP                                                                                     | Post-MVP                                           |
-| --------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| k8s Secrets for `DATABASE_URL` / `JWT_SECRET` and Azure PostgreSQL (else pods crash-loop) | Worker (`cmd/worker`) and River                    |
-| `database.WithTx`                                                                       | Blob storage (`platform/blob`)                     |
-| CORS allow-list with credentials (refresh cookie)                                       | Metrics                                            |
-| `/health/ready` and graceful shutdown                                                   | `platform/audit` and `audit_logs`                  |
-| OpenAPI export command for the FE                                                       | Config via `caarlos0/env`                          |
-| PR workflow running `make check`                                                        |                                                    |
-
-### Decisions needed before starting
-
-From [PLAN.md](../PLAN.md) section 7:
-
-1. **Roles** (decision 3): naming shared by BE and FE, and whether one user can be both buyer and jastiper.
-2. **Payment deadline** (decision 5), for example 24 hours after approval.
-3. **Midtrans** (decision 1): sandbox account for development; before production, confirm that holding funds and
-   paying jastipers out manually is allowed.
-4. **FE hosting** (decision 6): sets the CORS origins and the refresh cookie domain.
-
-### Order of work
-
-1. Platform, then F01 refresh tokens (Carlo).
-2. F02 Trip (Carlo) in parallel with F03 Order (Alfian); Order only needs `trip.Trip()`.
-3. F07 in-app notifications (Azfa); small, and used by F03 onwards.
-4. F04 Payment (Barru); the longest, so start the Midtrans sandbox integration early and in parallel.
-5. F05 Shipment (Alfian), then F06 Dispute (Barru) and F08 transactions list (Azfa).
-
-**Done when:** on AKS with Midtrans sandbox, one order runs from request to `released`, one dispute is decided as a
-refund by an admin, and the ledger stays balanced.
-
-## MVP flows
-
-End-to-end sequence diagrams across modules for the MVP scope above (no worker, no uploads, no trip capacity).
-Per-module detail is in each feature file.
+The diagrams below cross modules. Per-module detail is in each feature file.
 
 <details>
 <summary><strong style="font-size:1.1em;">1. Session: register, login, refresh, logout</strong></summary>
@@ -90,7 +51,7 @@ user -> fe      : Fill register or login form
 fe -> auth      : POST /auth/register or /auth/login
 auth -> db      : INSERT users / SELECT user by email
 db --> auth     : User
-auth -> auth    : Verify password (login), issue JWT (15 min)
+auth -> auth    : Verify password and status (login), issue JWT (15 min)
 auth -> db      : INSERT refresh_tokens (new family)
 auth --> fe     : 201/200 {accessToken, user}\nSet-Cookie: refresh_token (HttpOnly, Path=/auth)
 fe --> user     : Show home
@@ -99,10 +60,10 @@ fe --> user     : Show home
 fe -> auth      : POST /auth/refresh (cookie)
 auth -> db      : SELECT refresh_tokens by hash FOR UPDATE
 
-alt valid
+alt valid and user active
     auth -> db      : Revoke old, INSERT new (same family)
     auth --> fe     : 200 {accessToken, user} + new cookie
-else revoked (reuse) / expired / unknown
+else revoked (reuse) / expired / unknown / suspended
     auth -> db      : Revoke whole family (reuse only)
     auth --> fe     : 401 + clear cookie
     fe --> user     : Redirect to login
@@ -134,32 +95,34 @@ actor       "Jastiper"          as jas
 actor       "Pembeli"           as buyer
 participant "SPA"               as fe
 participant "API\ntrip"         as trip
+participant "Blob Storage"      as blob
 database    "PostgreSQL"        as db
 
 autonumber
 == Open trip ==
-jas -> fe       : Fill trip form (destination, dates, deadline)
+jas -> fe       : Fill trip form (destination, dates, deadline, capacity)
 fe -> trip      : POST /trips (Bearer, jastiper)
-trip -> trip    : Validate dates and deadline, generate slug
+trip -> trip    : Validate dates, deadline, capacity; generate slug
 trip -> db      : INSERT trips (status = open)
 trip --> fe     : 201 trip
-fe --> jas      : Show trip page /trip/:slug
+
+== Catalog ==
+jas -> fe       : Add a popular item with photo
+fe -> trip      : POST /uploads {purpose: trip_item_photo}
+trip --> fe     : 201 {uploadId, uploadUrl}
+fe -> blob      : PUT photo (SAS URL)
+fe -> trip      : POST /trips/{id}/items {name, referencePrice, photoUploadId}
+trip -> db      : INSERT trip_items, attach upload
+trip --> fe     : 201 item
 
 == Browse ==
-buyer -> fe     : Search by city
-fe -> trip      : GET /trips?city=…&limit=20
+buyer -> fe     : Search by city / dates
+fe -> trip      : GET /trips?city=…&from=…&to=…
 trip -> db      : SELECT open trips before request_deadline
 trip --> fe     : 200 {items, nextCursor}
-buyer -> fe     : Open a trip
 fe -> trip      : GET /trips/{slug}
-trip --> fe     : 200 trip
+trip --> fe     : 200 trip + catalog + remaining capacity
 fe --> buyer    : Show trip detail + 'Titip' button
-
-== Close trip (full) ==
-jas -> fe       : Press 'Tutup trip'
-fe -> trip      : POST /trips/{id}/close
-trip -> db      : UPDATE trips SET status = closed
-trip --> fe     : 200 trip
 
 @enduml
 ```
@@ -186,47 +149,46 @@ database    "PostgreSQL"        as db
 
 autonumber
 == Request ==
-buyer -> fe     : Fill request (product, link, qty, notes)
+buyer -> fe     : Fill request (product, link, qty, notes, photo)
 fe -> order     : POST /trips/{slug}/orders (buyer)
-order -> trip   : Trip(slug)
+order -> db     : BEGIN
+order -> trip   : Reserve(tripID, quantity)
 
-alt trip closed or deadline passed
+alt trip closed, deadline passed, or not enough capacity
+    trip --> order  : ErrTripClosed / ErrCapacityFull
+    order -> db     : ROLLBACK
     order --> fe    : 409
-    fe --> buyer    : Show 'Trip sudah tutup'
-else open
-    autonumber 5
-    order -> db     : BEGIN; INSERT orders (requested), order_events
+else reserved
+    order -> db     : INSERT orders (requested), order_events
     order -> notif  : Notify(jastiper, order.requested)
     notif -> db     : INSERT notifications
     order -> db     : COMMIT
     order --> fe    : 201 order
-    fe --> buyer    : Show order 'Menunggu persetujuan'
 end
 
 == Jastiper decides ==
-jas -> fe       : Open order from GET /orders
+jas -> fe       : Open the trip inbox (GET /me/trips/{id}/orders)
 
 alt approve
-    jas -> fe       : Set item price + jastip fee
     fe -> order     : POST /orders/{id}/approve {itemPrice, jastipFee}
     order -> db     : BEGIN; SELECT order FOR UPDATE
-    order -> order  : total = itemPrice × qty + jastipFee,\npayment_deadline = now + window
-    order -> db     : UPDATE status = approved, INSERT order_events
+    order -> order  : total = itemPrice × qty + jastipFee,\npayment_deadline = now + 24h
+    order -> db     : status = approved, order_events
     order -> notif  : Notify(buyer, order.approved)
     order -> db     : COMMIT
-    order --> fe    : 200 order
 else reject
     fe -> order     : POST /orders/{id}/reject {reason}
+    order -> trip   : Release(tripID, quantity)
     order -> db     : status = rejected, order_events, notify buyer
-    order --> fe    : 200 order
 end
 
-== Buyer cancels (before payment only) ==
+== Cancel before payment ==
 buyer -> fe     : Press 'Batalkan'
 fe -> order     : POST /orders/{id}/cancel
 order -> db     : SELECT order FOR UPDATE
 
 alt status requested / approved
+    order -> trip   : Release(tripID, quantity)
     order -> db     : status = cancelled, order_events, notify jastiper
     order --> fe    : 200 order
 else paid or later
@@ -239,7 +201,7 @@ end
 </details>
 
 <details>
-<summary><strong style="font-size:1.1em;">4. Payment: checkout and Midtrans callback</strong></summary>
+<summary><strong style="font-size:1.1em;">4. Payment: checkout and settlement (fake gateway)</strong></summary>
 
 ---
 
@@ -254,59 +216,40 @@ participant "API\npayment"      as pay
 participant "API\norder"        as order
 participant "API\nnotification" as notif
 database    "PostgreSQL"        as db
-participant "Midtrans"          as mt
 
 autonumber
 == Checkout ==
 buyer -> fe     : Press 'Bayar'
 fe -> pay       : POST /orders/{id}/payments (buyer)
-pay -> db       : SELECT order FOR UPDATE
+pay -> db       : BEGIN; SELECT order FOR UPDATE
 
 alt deadline passed
     pay -> order    : Cancel (system, payment deadline passed)
     pay --> fe      : 409
-    fe --> buyer    : Show 'Batas bayar habis'
 else pending payment exists
-    autonumber 4
-    pay --> fe      : 200 existing Snap token
+    pay --> fe      : 200 existing payment
 else approved
-    autonumber 4
     pay -> db       : INSERT payments (pending, amount = total)
-    pay -> mt       : Snap create transaction (order_id = payment.id)
-    mt --> pay      : token, redirect_url
-    pay --> fe      : 201 {token, redirectUrl}
+    pay -> pay      : Gateway.Checkout (fake: token + URL)
+    pay --> fe      : 201 payment
 end
 
-fe -> mt        : Open Snap popup
-buyer -> mt     : Pay (VA / QRIS / e-wallet)
+== Settle ==
+buyer -> fe     : Press 'Bayar sekarang' on the fake checkout
+fe -> pay       : POST /payments/{id}/simulate
+pay -> db       : BEGIN; lock payment and order
 
-== Callback (may arrive more than once) ==
-mt -> pay       : POST /payments/callback
-pay -> pay      : Verify signature_key
-pay -> db       : BEGIN; INSERT payment_notifications ON CONFLICT DO NOTHING
-
-alt duplicate
-    pay -> db       : COMMIT
-    pay --> mt      : 200 (no-op)
-else invalid signature
-    pay -> db       : outcome = rejected; COMMIT
-    pay --> mt      : 401
-else settlement
+alt already paid
+    pay --> fe      : 200 (no-op)
+else pending
     pay -> db       : UPDATE payments SET status = paid
-    pay -> db       : Ledger: debit gateway_clearing, credit escrow
+    pay -> db       : Ledger payment_received:<payment_id>\n(debit gateway_clearing, credit escrow)
     pay -> order    : MarkPaid(orderID)
     order -> db     : status = paid, order_events
     pay -> notif    : Notify(buyer + jastiper, payment.received)
     pay -> db       : COMMIT
-    pay --> mt      : 200
-else expire / cancel / deny
-    pay -> db       : UPDATE payments SET status = expired/failed; COMMIT
-    pay --> mt      : 200
+    pay --> fe      : 200 payment (paid)
 end
-
-fe -> order     : GET /orders/{id} (after Snap closes)
-order --> fe    : 200 order (paid)
-fe --> buyer    : Show 'Pembayaran berhasil'
 
 @enduml
 ```
@@ -334,17 +277,16 @@ database    "PostgreSQL"        as db
 
 autonumber
 == Ship ==
-jas -> fe       : Fill method (COD / courier + tracking number)
+jas -> fe       : Fill method (COD / courier + tracking number), proof photo
 fe -> ship      : PUT /orders/{id}/shipment
 ship -> db      : BEGIN
 ship -> order   : MarkShipped(orderID, jastiperID)
 
 alt not owner / status != paid
-    order --> ship  : error
     ship --> fe     : 404 / 409
 else ok
     order -> db     : status = shipped, order_events
-    ship -> db      : INSERT shipments
+    ship -> db      : INSERT shipments, attach proof upload
     ship -> notif   : Notify(buyer, order.shipped)
     ship -> db      : COMMIT
     ship --> fe     : 200 shipment
@@ -354,18 +296,18 @@ end
 buyer -> fe     : Press 'Pesanan diterima'
 fe -> ship      : POST /orders/{id}/confirm-receipt
 ship -> db      : BEGIN
-ship -> order   : MarkDelivered(orderID, buyerID)
-order -> db     : status = delivered, order_events
+ship -> order   : MarkDelivered(orderID, buyer)
 ship -> db      : UPDATE shipments SET delivered_at
 ship -> pay     : Release(orderID)
 pay -> pay      : fee = floor(total × 5 / 100)
-pay -> db       : Ledger (release:<order_id>): debit escrow,\ncredit jastiper_payable (95%) + platform_revenue (5%)
+pay -> db       : Ledger release:<order_id>: debit escrow,\ncredit jastiper_payable (95%) + platform_revenue (5%)
 pay -> order    : MarkReleased(orderID)
-order -> db     : status = released, order_events
 pay -> notif    : Notify(jastiper, order.released)
 ship -> db      : COMMIT
-ship --> fe     : 200 order (released)
-fe --> buyer    : Show 'Selesai'
+ship --> fe     : 200 (released)
+
+== Buyer never confirms ==
+note over ship, pay : job orders.auto_release, 7 days after shipped_at:\nMarkDelivered(system) → Release, same transaction
 
 @enduml
 ```
@@ -390,50 +332,47 @@ participant "API\norder"        as order
 participant "API\npayment"      as pay
 participant "API\nnotification" as notif
 database    "PostgreSQL"        as db
-participant "Midtrans\nDashboard" as mt
 
 autonumber
 == Open ==
-buyer -> fe     : Press 'Ajukan komplain' (category + description)
+buyer -> fe     : Press 'Ajukan komplain' (category, description, evidence photos)
 fe -> dsp       : POST /orders/{id}/dispute
 dsp -> db       : BEGIN
 dsp -> order    : MarkDisputed(orderID, buyerID)
 
-alt status != shipped / already disputed
+alt status != shipped
     dsp --> fe      : 409
 else ok
     order -> db     : status = disputed, order_events
-    dsp -> db       : INSERT disputes (open)
+    dsp -> db       : INSERT disputes (open), dispute_evidence
     dsp -> notif    : Notify(jastiper + admins, dispute.opened)
     dsp -> db       : COMMIT
     dsp --> fe      : 201 dispute
 end
 
+== Discuss ==
+buyer -> dsp    : POST /disputes/{id}/messages (also jastiper, admin)
+
 == Decide ==
 admin -> fe     : Open GET /admin/disputes → detail
 fe -> dsp       : POST /admin/disputes/{id}/decision {decision, note}
-dsp -> db       : BEGIN; SELECT dispute FOR UPDATE; UPDATE resolved
+dsp -> db       : BEGIN; SELECT dispute FOR UPDATE; resolve
 
 alt refund
-    dsp -> order    : ResolveDispute(refund)
-    order -> db     : status = refunded, order_events
     dsp -> pay      : Refund(orderID, dispute_refund)
-    pay -> db       : Ledger: debit escrow, credit buyer_refundable;\nINSERT refunds (pending)
+    pay -> db       : Ledger refund: debit escrow, credit buyer_refundable
+    pay -> pay      : Gateway.Refund (fake: succeeds)
+    pay -> db       : Ledger refund_paid: debit buyer_refundable,\ncredit gateway_clearing; refunds succeeded
+    pay -> order    : MarkRefunded(orderID)
 else release
-    dsp -> order    : ResolveDispute(release)
-    order -> db     : status = delivered, order_events
+    dsp -> order    : MarkDelivered(orderID, admin)
     dsp -> pay      : Release(orderID)
-    pay -> db       : Ledger release, order → released
 end
 
+dsp -> db       : INSERT audit_logs (dispute.decided)
 dsp -> notif    : Notify(buyer + jastiper, dispute.resolved)
 dsp -> db       : COMMIT
 dsp --> fe      : 200 dispute
-
-opt refund (manual in the MVP)
-    admin -> mt     : Refund the transaction in the Midtrans dashboard
-    admin -> db     : Mark refund succeeded\n(ledger: debit buyer_refundable, credit gateway_clearing)
-end
 
 @enduml
 ```
@@ -441,39 +380,40 @@ end
 </details>
 
 <details>
-<summary><strong style="font-size:1.1em;">7. Payout: admin pays jastipers manually</strong></summary>
+<summary><strong style="font-size:1.1em;">7. Payout: jastiper requests, admin pays</strong></summary>
 
 ---
 
 ```plantuml
 @startuml payout
 
-title Flow Manual Payout (F08, F04)
+title Flow Payout (F04, F08)
 
 actor       "Jastiper"          as jas
 actor       "Admin"             as admin
 participant "SPA"               as fe
 participant "API\npayment"      as pay
-participant "API\nadmin"        as adm
 database    "PostgreSQL"        as db
 participant "Bank"              as bank
 
 autonumber
+jas -> fe       : Save bank account
+fe -> pay       : PUT /me/payout-account
 jas -> fe       : Open wallet
-fe -> pay       : GET /wallet (jastiper)
-pay -> db       : SUM ledger_entries of jastiper_payable
-pay --> fe      : 200 {balance}
+fe -> pay       : GET /wallet
+pay -> db       : SUM jastiper_payable entries − requested payouts
+pay --> fe      : 200 {available, inEscrow, pendingPayout}
+jas -> fe       : Request payout
+fe -> pay       : POST /payouts {amount}
+pay -> db       : BEGIN; lock jastiper's payout rows;\ncheck amount ≤ available; INSERT payouts (requested)
+pay --> fe      : 201 payout
 
-admin -> fe     : Open transactions
-fe -> adm       : GET /admin/transactions
-adm -> db       : SELECT released orders (jastiper share, fee)\n+ refunds pending
-adm --> fe      : 200 {items, nextCursor}
-admin -> bank   : Transfer jastiper share (outside the system)
-note right of admin
-  Recording the payout in the ledger
-  (debit jastiper_payable, credit gateway_clearing)
-  comes with payouts post-MVP.
-end note
+admin -> fe     : Open payout queue
+fe -> pay       : GET /admin/payouts?status=requested
+admin -> bank   : Transfer to the jastiper's account (outside the system)
+fe -> pay       : POST /admin/payouts/{id}/paid {reference}
+pay -> db       : Ledger payout:<payout_id>: debit jastiper_payable,\ncredit gateway_clearing; payouts paid; audit log
+pay --> fe      : 200 payout
 
 @enduml
 ```
@@ -518,8 +458,8 @@ fe --> user     : Show list, clear badge
 
 ## Related
 
-[PLAN.md](../PLAN.md) (implementation plan and open decisions), [DATABASE.md](../DATABASE.md) (full DDL,
-takes precedence for table definitions), `titipdong-docs/PLAN.md` (business flow).
+[PLAN.md](../PLAN.md) (architecture, scope, platform), [DATABASE.md](../DATABASE.md) (full DDL, takes precedence for
+table definitions), `titipdong-docs/PLAN.md` (business flow).
 
-Diagrams are PlantUML (` ```plantuml ` blocks). Render them with the PlantUML IDE plugin, `plantuml` CLI, or
+Diagrams are PlantUML (` ```plantuml ` blocks). Render them with the PlantUML IDE plugin, the `plantuml` CLI, or
 <https://www.plantuml.com/plantuml>.

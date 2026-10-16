@@ -48,8 +48,12 @@ type healthStatus struct {
 // New creates the Fiber app and its Huma API with infrastructure endpoints
 // registered.
 func New(corsOrigins ...string) (*fiber.App, huma.API) {
+	return NewWithMetrics(monitoring.New(), corsOrigins...)
+}
+
+// NewWithMetrics is New with metrics shared with code outside the HTTP layer.
+func NewWithMetrics(metrics *monitoring.Metrics, corsOrigins ...string) (*fiber.App, huma.API) {
 	app := fiber.New()
-	metrics := monitoring.New()
 	app.Use(metrics.FiberMiddleware())
 	app.Use(logging.RequestMiddleware(slog.Default()))
 
@@ -71,11 +75,29 @@ func New(corsOrigins ...string) (*fiber.App, huma.API) {
 		OperationID: "health",
 		Method:      http.MethodGet,
 		Path:        "/health",
-		Summary:     "Liveness and readiness probe",
+		Summary:     "Liveness probe",
 		Tags:        []string{"system"},
 	}, func(context.Context, *struct{}) (*struct{ Body healthStatus }, error) {
 		return &struct{ Body healthStatus }{Body: healthStatus{Status: "ok"}}, nil
 	})
 
 	return app, api
+}
+
+// RegisterReadiness adds /health/ready, which answers 503 while check fails.
+func RegisterReadiness(api huma.API, check func(ctx context.Context) error) {
+	huma.Register(api, huma.Operation{
+		OperationID: "ready",
+		Method:      http.MethodGet,
+		Path:        "/health/ready",
+		Summary:     "Readiness probe: the API can reach its database",
+		Tags:        []string{"system"},
+		Errors:      []int{http.StatusServiceUnavailable},
+	}, func(ctx context.Context, _ *struct{}) (*struct{ Body healthStatus }, error) {
+		if err := check(ctx); err != nil {
+			slog.WarnContext(ctx, "readiness_check_failed", "error", err)
+			return nil, huma.Error503ServiceUnavailable("Not ready.")
+		}
+		return &struct{ Body healthStatus }{Body: healthStatus{Status: "ok"}}, nil
+	})
 }

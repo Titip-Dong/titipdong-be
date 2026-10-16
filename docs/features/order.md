@@ -1,11 +1,10 @@
 # F03 Order
 
-| Item    | Value            |
-| ------- | ---------------- |
-| Owner   | Alfian           |
-| Package | `internal/order` |
-| Tag     | `order`          |
-| Status  | Not started      |
+| Item    | Value                                                                        |
+| ------- | ---------------------------------------------------------------------------- |
+| Package | `internal/order`                                                             |
+| Tag     | `order`                                                                      |
+| Status  | Partial: state machine and endpoints done; capacity, photo, notifications, trip inbox to do |
 
 ## Overview
 
@@ -24,10 +23,10 @@ requested --> approved : jastiper approves + sets price
 requested --> rejected : jastiper rejects
 requested --> cancelled : buyer cancels
 approved --> paid : payment settled (F04)
-approved --> cancelled : payment deadline passed (job) / buyer cancels
+approved --> cancelled : buyer cancels / payment deadline passed (system)
 paid --> shipped : jastiper hands over (F05)
-paid --> refunded : jastiper cancels (F04 refund)
-shipped --> delivered : buyer confirms receipt (F05)
+paid --> refunded : jastiper cancels after payment (F04 refund)
+shipped --> delivered : buyer confirms receipt (F05) / 7 days without dispute (system)
 shipped --> disputed : buyer opens dispute (F06)
 disputed --> refunded : admin decides refund
 disputed --> delivered : admin decides release
@@ -39,29 +38,48 @@ cancelled --> [*]
 @enduml
 ```
 
-| Method            | From → To                       | Actor             | Called by              |
-| ----------------- | ------------------------------- | ----------------- | ---------------------- |
-| `Create`          | – → `requested`                 | buyer             | Order handler          |
-| `Approve`         | `requested` → `approved`        | jastiper (owner)  | Order handler          |
-| `Reject`          | `requested` → `rejected`        | jastiper (owner)  | Order handler          |
-| `Cancel`          | `requested`/`approved` → `cancelled` | buyer / system | Order handler, expire job |
-| `MarkPaid`        | `approved` → `paid`             | system            | Payment                |
-| `MarkShipped`     | `paid` → `shipped`              | jastiper          | Shipment               |
-| `MarkDelivered`   | `shipped` → `delivered`         | buyer             | Shipment               |
-| `MarkDisputed`    | `shipped` → `disputed`          | buyer             | Dispute                |
-| `ResolveDispute`  | `disputed` → `delivered`/`refunded` | admin         | Dispute                |
-| `MarkReleased`    | `delivered` → `released`        | system            | Payment                |
-| `MarkRefunded`    | `paid`/`disputed` → `refunded`  | jastiper / admin  | Payment                |
+| Method            | From → To                            | Actor             | Called by                     |
+| ----------------- | ------------------------------------ | ----------------- | ----------------------------- |
+| `Create`          | – → `requested`                      | buyer             | Order handler                 |
+| `Approve`         | `requested` → `approved`             | jastiper (owner)  | Order handler                 |
+| `Reject`          | `requested` → `rejected`             | jastiper (owner)  | Order handler                 |
+| `Cancel`          | `requested`/`approved` → `cancelled` | buyer (owner)     | Order handler                 |
+| `ExpireUnpaid`    | `approved` → `cancelled`             | system            | Payment checkout, read path, job `orders.expire_unpaid` |
+| `MarkPaid`        | `approved` → `paid`                  | system            | Payment                       |
+| `MarkShipped`     | `paid` → `shipped`                   | jastiper (owner)  | Shipment                      |
+| `MarkDelivered`   | `shipped` → `delivered`              | buyer (owner) / system | Shipment, auto-release job |
+| `MarkDelivered`   | `disputed` → `delivered`             | admin             | Dispute (release decision)    |
+| `MarkDisputed`    | `shipped` → `disputed`               | buyer (owner)     | Dispute                       |
+| `MarkReleased`    | `delivered` → `released`             | system            | Payment                       |
+| `MarkRefunded`    | `paid` → `refunded`                  | jastiper (owner)  | Payment (jastiper cancel)     |
+| `MarkRefunded`    | `disputed` → `refunded`              | admin             | Payment (dispute refund)      |
 
 ## Business rules
 
 - Buyer and jastiper must differ. `jastiper_id` is copied from the trip for access checks.
-- Creating an order reserves trip capacity (`trip.Reserve`); reject, cancel, and refund release it.
+- Creating an order reserves `quantity` items of trip capacity (`trip.Reserve`). Reject, cancel, expiry, and refund
+  release it (`trip.Release`). Delivered and released orders keep it: the item was carried.
 - On approval: `total = item_price × quantity + jastip_fee`, all integer rupiah, computed only in the backend.
-  `payment_deadline` is set (window still open, PLAN section 7 decision 5).
-- Every transition, in **one transaction**: lock the order (`SELECT … FOR UPDATE`), check the transition table and the
-  actor, update `status`, insert `order_events`, enqueue a notification (River `InsertTx`).
-- Ownership: a buyer sees only their orders, a jastiper only orders on their trips. Others get 404.
+  `payment_deadline = now + 24h`.
+- An `approved` order past its `payment_deadline` is cancelled by the system: by the `orders.expire_unpaid` job, when
+  the order is read, and when checkout is attempted.
+- Every transition, in **one transaction**: lock the order (`SELECT … FOR UPDATE`), check the transition table and
+  the actor, update `status`, insert `order_events`, release capacity where needed, and notify (F07).
+- Ownership: a buyer sees only their orders, a jastiper only orders on their trips, an admin every order. Others get
+  404.
+- The product photo is optional, an upload with purpose `order_photo`.
+
+### Notifications sent
+
+| Transition                       | Type              | Recipient        |
+| -------------------------------- | ----------------- | ---------------- |
+| → `requested`                    | `order.requested` | jastiper         |
+| → `approved`                     | `order.approved`  | buyer            |
+| → `rejected`                     | `order.rejected`  | buyer            |
+| → `cancelled` (buyer)            | `order.cancelled` | jastiper         |
+| → `cancelled` (payment deadline) | `order.cancelled` | buyer, jastiper  |
+
+Payment, Shipment, and Dispute send the notifications for the transitions they drive.
 
 ## Database tables
 
@@ -93,7 +111,6 @@ entity orders {
   product_url : TEXT
   photo_key : TEXT
   * quantity : INTEGER
-  * capacity_units : INTEGER
   notes : TEXT
   item_price : BIGINT
   jastip_fee : BIGINT
@@ -129,16 +146,15 @@ users |o--o{ order_events : actor
 
 | Column             | Type          | Notes                                                    |
 | ------------------ | ------------- | -------------------------------------------------------- |
-| `id`               | `UUID` PK     |                                                          |
+| `id`               | `UUID` PK     | UUIDv7                                                   |
 | `code`             | `TEXT`        | Unique human-friendly reference, e.g. `TD-7K3P9Q`         |
 | `trip_id`          | `UUID` FK     | → `trips.id`                                             |
 | `buyer_id`         | `UUID` FK     | → `users.id`                                             |
 | `jastiper_id`      | `UUID` FK     | → `users.id`, `<> buyer_id`                              |
 | `product_name`     | `TEXT`        | ≤ 200                                                    |
-| `product_url`      | `TEXT`        | ≤ 2000, nullable                                         |
-| `photo_key`        | `TEXT`        | Blob key, nullable                                       |
-| `quantity`         | `INTEGER`     | `> 0`                                                    |
-| `capacity_units`   | `INTEGER`     | Trip capacity reserved                                   |
+| `product_url`      | `TEXT`        | ≤ 2000, default `''`                                     |
+| `photo_key`        | `TEXT`        | Blob key, nullable (to add)                              |
+| `quantity`         | `INTEGER`     | `> 0`; also the trip capacity this order reserves        |
 | `notes`            | `TEXT`        | ≤ 1000                                                   |
 | `item_price`       | `BIGINT`      | Per unit, set on approval                                |
 | `jastip_fee`       | `BIGINT`      | Whole order, set on approval                             |
@@ -163,23 +179,19 @@ users |o--o{ order_events : actor
 
 ## Endpoints
 
-| Method | Path                        | operationId          | Auth                 | Description                                  |
-| ------ | --------------------------- | -------------------- | -------------------- | -------------------------------------------- |
-| `POST` | `/trips/{slug}/orders`      | `createOrder`        | `buyer`              | Request an item on a trip                    |
-| `GET`  | `/orders`                   | `listOrders`         | `buyer`, `jastiper`  | Caller's orders (view depends on role); cursor |
-| `GET`  | `/orders/{id}`              | `getOrder`           | owner buyer/jastiper, admin | Detail + event timeline               |
-| `GET`  | `/me/trips/{id}/orders`     | `listTripOrders`     | `jastiper` (owner)   | Jastiper inbox per trip                      |
-| `POST` | `/orders/{id}/approve`      | `approveOrder`       | `jastiper` (owner)   | Body `{ itemPrice, jastipFee }`              |
-| `POST` | `/orders/{id}/reject`       | `rejectOrder`        | `jastiper` (owner)   | Body `{ reason }`                            |
-| `POST` | `/orders/{id}/cancel`       | `cancelOrder`        | `buyer` (owner)      | Before payment only                          |
+| Method | Path                        | operationId          | Auth                        | Status | Description                                  |
+| ------ | --------------------------- | -------------------- | --------------------------- | ------ | -------------------------------------------- |
+| `POST` | `/trips/{slug}/orders`      | `createOrder`        | `buyer`                     | Done   | Request an item on a trip                    |
+| `GET`  | `/orders`                   | `listOrders`         | `buyer`, `jastiper`         | Done   | Caller's orders (view depends on role); filter `status`; cursor |
+| `GET`  | `/orders/{id}`              | `getOrder`           | owner buyer/jastiper, admin | Done   | Detail + event timeline                      |
+| `POST` | `/orders/{id}/approve`      | `approveOrder`       | `jastiper` (owner)          | Done   | Body `{ itemPrice, jastipFee }`              |
+| `POST` | `/orders/{id}/reject`       | `rejectOrder`        | `jastiper` (owner)          | Done   | Body `{ reason }`                            |
+| `POST` | `/orders/{id}/cancel`       | `cancelOrder`        | `buyer` (owner)             | Done   | Before payment only                          |
+| `GET`  | `/me/trips/{id}/orders`     | `listTripOrders`     | `jastiper` (owner)          | To do  | Jastiper inbox for one trip; filter `status`; cursor |
 
-Invalid transitions return `409 Conflict`.
+`createOrder` gains an optional `photoUploadId`; order responses gain a signed `photoUrl`.
 
-### Jobs
-
-| Job                    | Scheduled                    | Action                                                          |
-| ---------------------- | ---------------------------- | --------------------------------------------------------------- |
-| `order.expire_unpaid`  | At approval, runs at `payment_deadline` | If still `approved`: `cancelled`, release trip capacity |
+Invalid transitions return `409 Conflict`; a full trip returns `409` with `Trip is full.`
 
 ## Sequence diagrams
 
@@ -200,7 +212,7 @@ database PostgreSQL as DB
 Pembeli -> H : POST /trips/{slug}/orders (Bearer, buyer)
 H -> S : Create(buyerID, slug, params)
 S -> DB : BEGIN
-S -> T : Reserve(tripID, units)
+S -> T : Reserve(tripID, quantity)
 T -> DB : SELECT trip FOR UPDATE, UPDATE reserved_capacity
 alt closed or full
   T --> S : ErrTripClosed / ErrCapacityFull
@@ -210,8 +222,9 @@ alt closed or full
 end
 S -> DB : INSERT orders (status = requested)
 S -> DB : INSERT order_events (null → requested)
+S -> DB : attach photo upload (if any)
 S -> N : Notify(jastiperID, order.requested)
-N -> DB : River InsertTx
+N -> DB : INSERT notifications
 S -> DB : COMMIT
 H --> Pembeli : 201 order
 @enduml
@@ -243,9 +256,8 @@ else status != requested
   H --> Jastiper : 409
 else ok
   S -> S : total = itemPrice × qty + jastipFee
-  S -> DB : UPDATE orders SET status = approved, prices, payment_deadline
+  S -> DB : UPDATE orders SET status = approved, prices, payment_deadline = now + 24h
   S -> DB : INSERT order_events
-  S -> DB : River InsertTx order.expire_unpaid (ScheduledAt = payment_deadline)
   S -> N : Notify(buyerID, order.approved)
   S -> DB : COMMIT
   H --> Jastiper : 200 order
@@ -256,57 +268,52 @@ end
 </details>
 
 <details>
-<summary><strong style="font-size:1.1em;">Expire unpaid order (job)</strong></summary>
+<summary><strong style="font-size:1.1em;">Expire unpaid orders (job)</strong></summary>
 
 ---
 
 ```plantuml
 @startuml
-participant "Worker" as W
+participant "platform/jobs" as J
 participant "order.Service" as S
 participant "trip.Service" as T
+participant "notification.Service" as N
 database PostgreSQL as DB
 
-W -> S : ExpireUnpaid(orderID)
-S -> DB : BEGIN; SELECT order FOR UPDATE
-alt status != approved (already paid / cancelled)
-  S -> DB : COMMIT (no-op)
-else
-  S -> DB : UPDATE status = cancelled, reason = payment deadline passed
-  S -> DB : INSERT order_events (actor_type = system)
-  S -> T : Release(tripID, units)
-  S -> DB : COMMIT
+J -> DB : pg_try_advisory_lock(orders.expire_unpaid)
+J -> S : ExpireUnpaid(ctx)
+S -> DB : SELECT id FROM orders\nWHERE status = 'approved' AND payment_deadline < now()
+loop each order, own transaction
+  S -> DB : BEGIN; SELECT order FOR UPDATE
+  alt no longer approved (paid or cancelled meanwhile)
+    S -> DB : COMMIT (no-op)
+  else
+    S -> DB : status = cancelled, reason = payment deadline passed,\nINSERT order_events (actor_type = system)
+    S -> T : Release(tripID, quantity)
+    S -> N : Notify(buyer + jastiper, order.cancelled)
+    S -> DB : COMMIT
+  end
 end
 @enduml
 ```
 
 </details>
 
-## To do
+## Remaining work
 
-MVP scope is defined in [README.md](README.md#mvp-scope).
+Done:
 
-### MVP
-
-- [x] Decide the payment deadline window, for example 24 hours after approval (PLAN section 7, decision 5). Decided: 24 hours.
-- [x] Platform prerequisite: `database.WithTx` (PLAN section 3).
-- [x] Migration `create_orders` (`orders`, `order_events`) and queries. `capacity_units` and `photo_key` are left out
-      (no trip capacity, no uploads in the MVP).
-- [x] Full transition table (from, to, allowed actor) and all explicit methods listed above; this is the core of the
-      service and is not cut.
+- [x] `orders` and `order_events`, the full transition table, and the explicit methods.
 - [x] Order code generator (`TD-XXXXXX`, unique, retry on conflict).
-- [x] Endpoints `createOrder` (rejects `closed` trips and requests after the deadline), `listOrders` (buyer or
-      jastiper view by role), `getOrder` (with timeline), `approveOrder`, `rejectOrder`, `cancelOrder` (before
-      payment only).
-- [x] Unpaid orders without a job: payment creation is refused after `payment_deadline`, and an `approved` order
-      past its deadline is cancelled when it is next read or acted on (`actor_type = system`). Implemented as
-      one `UPDATE … RETURNING` + `INSERT order_events` statement run before `listOrders` and `getOrder`.
-- [ ] Notifications in the same transaction through `notification.Notify` (in-app row, no River).
-- [ ] Integration tests (testcontainers) for concurrent transitions.
+- [x] `createOrder`, `listOrders`, `getOrder` (with timeline), `approveOrder`, `rejectOrder`, `cancelOrder`.
+- [x] Unpaid orders past the deadline are cancelled on read and on checkout.
 
-### Post-MVP
+Remaining:
 
-- [ ] Worker + River (PLAN section 3) and the `order.expire_unpaid` job, replacing the on-read cancellation.
-- [ ] Trip capacity: `capacity_units`, `trip.Reserve`/`Release` in the order transaction.
-- [ ] Product photo through blob SAS uploads.
-- [ ] `GET /me/trips/{id}/orders` jastiper inbox per trip (`GET /orders` covers it in the MVP).
+- [ ] Capacity: `trip.Reserve` on create, `trip.Release` on reject, cancel, expiry, and refund.
+- [ ] Transition `shipped → delivered` by the system, for auto-release.
+- [ ] Notifications (F07) inside each transition's transaction.
+- [ ] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
+- [ ] `GET /me/trips/{id}/orders`.
+- [ ] Job `orders.expire_unpaid`.
+- [ ] Integration test for concurrent transitions on the same order.

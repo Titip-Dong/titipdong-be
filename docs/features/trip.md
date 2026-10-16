@@ -1,15 +1,14 @@
 # F02 Trip & Catalog
 
-| Item    | Value           |
-| ------- | --------------- |
-| Owner   | Carlo           |
-| Package | `internal/trip` |
-| Tag     | `trip`          |
-| Status  | MVP done        |
+| Item    | Value                                                                  |
+| ------- | ---------------------------------------------------------------------- |
+| Package | `internal/trip`                                                        |
+| Tag     | `trip`                                                                 |
+| Status  | Partial: create, list, get, close, my trips done; capacity, edit, cancel, catalog to do |
 
 ## Overview
 
-A jastiper opens a **trip** (destination, travel dates, request deadline, capacity) and can list popular items for it
+A jastiper opens a **trip** (destination, travel dates, request deadline, capacity) and lists popular items for it
 (the **catalog**). Buyers browse and filter open trips and request items through F03 Order.
 
 The trip owns its capacity. Order reserves and releases capacity through `trip.Service.Reserve` / `Release` inside
@@ -17,15 +16,22 @@ the order's transaction, so the dependency stays one-way (`order → trip`).
 
 ## Business rules
 
-- Only jastipers create and edit trips; a jastiper can only edit their own trips (others get 404, not 403).
-- `returns_on >= departs_on`; `request_deadline` is the last moment buyers can request.
-- `slug` is unique and used in the public URL (`/trip/:slug`).
-- `reserved_capacity` is changed only by `Reserve`/`Release`, which lock the trip row (`SELECT … FOR UPDATE`). A
-  `CHECK (reserved_capacity BETWEEN 0 AND capacity)` makes overbooking impossible even if code is wrong.
-- Status: `open` (accepting requests) → `closed` (deadline passed or closed by the jastiper) → `completed`; or
-  `cancelled` (trip will not happen; open orders must be rejected or refunded first).
-- `trip_items.reference_price` is indicative only; the final price is set per order at approval.
-- Capacity unit (kg, items, …) is still open (PLAN section 7, decision 4).
+- Only jastipers create trips; a jastiper can only change their own trips (others get 404, not 403).
+- `returns_on >= departs_on`; `request_deadline` is the last moment buyers can request and must be in the future and
+  no later than the end of `returns_on`.
+- `slug` is unique and used in the public URL (`/trip/:slug`): the title plus a short random suffix.
+- **Capacity is counted in items.** An order reserves its `quantity`. `reserved_capacity` is changed only by
+  `Reserve` / `Release`, which lock the trip row (`SELECT … FOR UPDATE`). `CHECK (reserved_capacity BETWEEN 0 AND
+  capacity)` makes overbooking impossible even if code is wrong.
+- A trip accepts requests when it is `open`, before `request_deadline`, and has remaining capacity.
+- Status:
+  - `open` → `closed`: closed by the jastiper, or by the `trips.close_expired` job once `request_deadline` passes.
+  - `closed` → `completed`: set by the same job once `returns_on` has passed and no order is still active.
+  - `open`/`closed` → `cancelled`: by the jastiper, only when the trip has no active order (`requested`, `approved`,
+    `paid`, `shipped`, `delivered`, `disputed`).
+- Editing (`PATCH`) is allowed while `open`. `capacity` cannot drop below `reserved_capacity`.
+- Catalog items (`trip_items`) are edited while the trip is `open` or `closed`. `reference_price` is indicative; the
+  final price is set per order at approval. Photos are uploads with purpose `trip_item_photo`.
 
 ## Database tables
 
@@ -76,7 +82,7 @@ entity orders <<F03>> {
   * id : UUID <<PK>>
   --
   * trip_id : UUID <<FK>>
-  * capacity_units : INTEGER
+  * quantity : INTEGER
 }
 
 users ||--o{ trips : "opens (jastiper)"
@@ -99,51 +105,55 @@ trips ||--o{ orders : "reserves capacity"
 | `departs_on`          | `DATE`        |                                                      |
 | `returns_on`          | `DATE`        | `>= departs_on`                                      |
 | `request_deadline`    | `TIMESTAMPTZ` |                                                      |
-| `capacity`            | `INTEGER`     | `> 0`                                                |
-| `reserved_capacity`   | `INTEGER`     | Default 0, `BETWEEN 0 AND capacity`                  |
+| `capacity`            | `INTEGER`     | Items, `> 0` (to add)                                |
+| `reserved_capacity`   | `INTEGER`     | Default 0, `BETWEEN 0 AND capacity` (to add)         |
 | `status`              | `TEXT`        | `open`, `closed`, `completed`, `cancelled`           |
-| `created_at`, `updated_at` | `TIMESTAMPTZ` |                                              |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` |                                                 |
 
-Indexes: `trips_browse_idx (destination_city, departs_on) WHERE status = 'open'`,
-`trips_jastiper_idx (jastiper_id, created_at DESC)`.
+Indexes: `trips_browse_idx (departs_on, id) WHERE status = 'open'`, `trips_jastiper_idx (jastiper_id, created_at
+DESC, id DESC)`.
 
-### `trip_items`
+### `trip_items` (to add)
 
-| Column            | Type          | Notes                          |
-| ----------------- | ------------- | ------------------------------ |
-| `id`              | `UUID` PK     |                                |
-| `trip_id`         | `UUID` FK     | → `trips.id`                   |
-| `name`            | `TEXT`        | ≤ 120 chars                    |
-| `description`     | `TEXT`        | ≤ 1000 chars                   |
+| Column            | Type          | Notes                            |
+| ----------------- | ------------- | -------------------------------- |
+| `id`              | `UUID` PK     |                                  |
+| `trip_id`         | `UUID` FK     | → `trips.id`                     |
+| `name`            | `TEXT`        | ≤ 120 chars                      |
+| `description`     | `TEXT`        | ≤ 1000 chars                     |
 | `photo_key`       | `TEXT`        | Blob object key (from `uploads`) |
-| `reference_price` | `BIGINT`      | Rupiah, `>= 0`, indicative     |
-| `position`        | `INTEGER`     | Display order                  |
-| `created_at`, `updated_at` | `TIMESTAMPTZ` |                       |
+| `reference_price` | `BIGINT`      | Rupiah, `>= 0`, indicative       |
+| `position`        | `INTEGER`     | Display order                    |
+| `created_at`, `updated_at` | `TIMESTAMPTZ` |                         |
 
 ## Endpoints
 
-| Method   | Path                            | operationId       | Auth            | Description                                   |
-| -------- | ------------------------------- | ----------------- | --------------- | --------------------------------------------- |
-| `GET`    | `/trips`                        | `listTrips`       | Public          | Open trips; filter by city, date range; cursor |
-| `GET`    | `/trips/{slug}`                 | `getTrip`         | Public          | Trip detail with catalog and remaining capacity |
-| `POST`   | `/trips`                        | `createTrip`      | `jastiper`      | Create a trip                                 |
-| `PATCH`  | `/trips/{id}`                   | `updateTrip`      | `jastiper` (owner) | Edit a trip                                |
-| `POST`   | `/trips/{id}/close`             | `closeTrip`       | `jastiper` (owner) | Stop accepting requests                    |
-| `GET`    | `/me/trips`                     | `listMyTrips`     | `jastiper`      | The caller's trips                            |
-| `GET`    | `/trips/{id}/items`             | `listTripItems`   | Public          | Catalog items                                 |
-| `POST`   | `/trips/{id}/items`             | `createTripItem`  | `jastiper` (owner) | Add a catalog item                         |
-| `PATCH`  | `/trips/{id}/items/{itemId}`    | `updateTripItem`  | `jastiper` (owner) | Edit a catalog item                        |
-| `DELETE` | `/trips/{id}/items/{itemId}`    | `deleteTripItem`  | `jastiper` (owner) | Remove a catalog item                      |
+| Method   | Path                            | operationId       | Auth               | Status | Description                                    |
+| -------- | ------------------------------- | ----------------- | ------------------ | ------ | ---------------------------------------------- |
+| `GET`    | `/trips`                        | `listTrips`       | Public             | Done   | Open trips accepting requests; filter `city`; cursor |
+| `GET`    | `/trips/{slug}`                 | `getTrip`         | Public             | Done   | Trip detail                                    |
+| `POST`   | `/trips`                        | `createTrip`      | `jastiper`         | Done   | Create a trip                                  |
+| `POST`   | `/trips/{id}/close`             | `closeTrip`       | `jastiper` (owner) | Done   | Stop accepting requests                        |
+| `GET`    | `/me/trips`                     | `listMyTrips`     | `jastiper`         | Done   | The caller's trips                             |
+| `PATCH`  | `/trips/{id}`                   | `updateTrip`      | `jastiper` (owner) | To do  | Edit an open trip                              |
+| `POST`   | `/trips/{id}/cancel`            | `cancelTrip`      | `jastiper` (owner) | To do  | Cancel a trip without active orders            |
+| `GET`    | `/trips/{id}/items`             | `listTripItems`   | Public             | To do  | Catalog items in display order                 |
+| `POST`   | `/trips/{id}/items`             | `createTripItem`  | `jastiper` (owner) | To do  | Add a catalog item                             |
+| `PATCH`  | `/trips/{id}/items/{itemId}`    | `updateTripItem`  | `jastiper` (owner) | To do  | Edit a catalog item                            |
+| `DELETE` | `/trips/{id}/items/{itemId}`    | `deleteTripItem`  | `jastiper` (owner) | To do  | Remove a catalog item                          |
+
+Trip responses gain `capacity` and `remainingCapacity`; `getTrip` also embeds the catalog (`items`, each with a
+signed `photoUrl`). `listTrips` gains `from` / `to` filters on `departsOn`.
 
 Lists use cursor pagination (`?limit=` default 20, max 100; `?cursor=`), responses `{ items, nextCursor }`.
 
 ### Service methods for other modules
 
-| Method                                  | Caller | Purpose                                         |
-| --------------------------------------- | ------ | ----------------------------------------------- |
-| `Reserve(ctx, tripID, units) error`     | Order  | Lock trip, check `open` + deadline, add units   |
-| `Release(ctx, tripID, units) error`     | Order  | Lock trip, subtract units (reject/cancel/refund) |
-| `Trip(ctx, id) (Trip, error)`           | Order  | Read jastiper ID, status, deadline              |
+| Method                                         | Caller | Purpose                                                  |
+| ---------------------------------------------- | ------ | -------------------------------------------------------- |
+| `BySlug(ctx, slug)`, `ByID(ctx, id)`           | Order  | Read jastiper ID, status, deadline                       |
+| `Reserve(ctx, tripID, units) error`            | Order  | Lock trip; `ErrTripClosed` unless accepting; `ErrCapacityFull` if not enough room; add units |
+| `Release(ctx, tripID, units) error`            | Order  | Lock trip, subtract units (reject, cancel, refund)        |
 
 ## Sequence diagrams
 
@@ -193,14 +203,14 @@ database PostgreSQL as DB
 Pembeli -> FE : search city / dates
 FE -> H : GET /trips?city=Tokyo&from=…&to=…&limit=20
 H -> S : List(filter, cursor)
-S -> DB : SELECT … FROM trips JOIN users\nWHERE status = 'open' AND … ORDER BY departs_on, id LIMIT 21
+S -> DB : SELECT … FROM trips JOIN users\nWHERE status = 'open' AND request_deadline > now() AND … ORDER BY departs_on, id LIMIT 21
 DB --> S : rows
 S --> H : items + nextCursor
 H --> FE : 200 {items, nextCursor}
 FE -> H : GET /trips/{slug}
 H -> S : BySlug(slug)
 S -> DB : SELECT trip + trip_items
-H --> FE : 200 trip (capacity - reserved_capacity = remaining)
+H --> FE : 200 trip (remainingCapacity = capacity - reserved_capacity)
 @enduml
 ```
 
@@ -233,28 +243,20 @@ end
 
 </details>
 
-## To do
+## Remaining work
 
-MVP scope is defined in [README.md](README.md#mvp-scope).
+Done:
 
-### MVP
-
-- [x] Migration `create_trips` (`trips` only, **without** `capacity` / `reserved_capacity`) and queries in
-      `db/queries/trips.sql`.
-- [x] Repository, service, handler for `createTrip`, `listTrips` (city filter + cursor), `getTrip`, `listMyTrips`,
-      `closeTrip`.
-- [x] Slug generation (from title + short random suffix), unique.
-- [x] `ByID(ctx, id)` / `BySlug` and `Trip.AcceptsRequests(now)` for Order to read jastiper, status, and deadline. No capacity: the jastiper closes the trip
-      manually when full.
-- [x] Deadline handled on read: `listTrips` hides trips past `request_deadline`, and Order rejects requests on
-      `closed` trips or after the deadline (no job).
+- [x] `trips` table, create, list (city filter + cursor), get, close, my trips.
+- [x] Slug generation, `ByID` / `BySlug`, `Trip.AcceptsRequests(now)`.
 - [x] Service and handler tests.
 
-### Post-MVP
+Remaining:
 
-- [ ] Decide the capacity unit (PLAN section 7, decision 4), add `capacity` / `reserved_capacity` (expand
-      migration), `Reserve`/`Release` under row lock, and an integration test for concurrent `Reserve`.
-- [ ] `PATCH /trips/{id}`.
-- [ ] Catalog: `trip_items` table and CRUD under `/trips/{id}/items`.
-- [ ] Catalog photos through blob SAS uploads (`uploads.purpose = 'trip_item_photo'`), depends on `platform/blob`.
-- [ ] Auto-close job when `request_deadline` passes (worker).
+- [ ] Migration adding `capacity` / `reserved_capacity`, backfilling `reserved_capacity` from existing active orders.
+- [ ] `capacity` in create and responses, `remainingCapacity`; `Reserve` / `Release` under a row lock; integration
+      test for concurrent `Reserve`.
+- [ ] `from` / `to` filters on `listTrips`.
+- [ ] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.
+- [ ] `trip_items` table and catalog CRUD with photos (`platform/blob`).
+- [ ] Job `trips.close_expired` (`open` → `closed` after the deadline, `closed` → `completed` after the return date).

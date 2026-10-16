@@ -19,8 +19,8 @@ help: ## List available commands
 ## Local database (compose.yaml)
 
 .PHONY: db-up
-db-up: ## Start local PostgreSQL and API containers, then wait until healthy
-	docker compose up -d --wait
+db-up: ## Start local PostgreSQL, Azurite, and API containers (rebuilding the API), then wait until healthy
+	docker compose up -d --build --wait
 
 .PHONY: db-down
 db-down: ## Stop local PostgreSQL and API containers, keeping database data
@@ -44,6 +44,10 @@ run: ## Run the API on the host (reads .env, applies migrations on startup)
 .PHONY: seed
 seed: ## Create the demo accounts (idempotent)
 	go run ./cmd/api seed-demo
+
+.PHONY: openapi
+openapi: ## Write the OpenAPI spec to openapi.json (no database needed)
+	go run ./cmd/api openapi > openapi.json
 
 .PHONY: build
 build: ## Build the API binary into bin/

@@ -31,7 +31,7 @@ func TestSimulateRouteOnlyInFakeMode(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodPost, "/payments/"+uuid.NewString()+"/simulate", nil)
 		req.Header.Set("Authorization", "Bearer buyer")
-		res, err := app.Test(req)
+		res, err := app.Test(req, -1)
 		if err != nil {
 			t.Fatal(err)
 		}
