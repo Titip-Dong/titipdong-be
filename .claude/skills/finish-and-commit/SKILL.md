@@ -58,7 +58,7 @@ TEST_DATABASE_URL="$DATABASE_URL" go test ./... -count=1
 ### Message
 - Message: Conventional Commits with a module scope, imperative, lowercase, no trailing period:
   `feat(order): reserve trip capacity on create`, `fix(payment): ...`, `docs(trip): ...`,
-  `refactor(platform): ...`, `chore(dev): ...`, `test(payment): ...`. Optional body explains why.
+  `refactor(platform): ...`, `chore(dev): ...`, `test(payment): ...`. Subject line only: no body/description (`git commit -m "<subject>"` once).
 - **No AI attribution**: no `Co-Authored-By: Claude`, no "Generated with Claude Code", no session links. Do not pass
   `--author` or override `user.name` / `user.email`; the commit belongs to the local git identity.
 - Never force-push or rewrite pushed history unless the user asked.
