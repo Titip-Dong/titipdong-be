@@ -19,8 +19,8 @@ help: ## List available commands
 ## Local database (compose.yaml)
 
 .PHONY: db-up
-db-up: ## Start local PostgreSQL and API containers, then wait until healthy
-	docker compose up -d --wait
+db-up: ## Start local PostgreSQL, Azurite, and API containers (rebuilding the API), then wait until healthy
+	docker compose up -d --build --wait
 
 .PHONY: db-down
 db-down: ## Stop local PostgreSQL and API containers, keeping database data
