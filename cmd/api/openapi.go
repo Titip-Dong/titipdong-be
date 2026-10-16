@@ -14,7 +14,7 @@ import (
 func openAPISpec() ([]byte, error) {
 	_, api := httpserver.New()
 	httpserver.RegisterReadiness(api, func(context.Context) error { return nil })
-	registerRoutes(api, nil, config.Config{JWTSecret: strings.Repeat("x", 32), PaymentGateway: "fake"})
+	registerRoutes(api, nil, config.Config{JWTSecret: strings.Repeat("x", 32), PaymentGateway: "fake"}, nil)
 	raw, err := json.Marshal(api.OpenAPI())
 	if err != nil {
 		return nil, err

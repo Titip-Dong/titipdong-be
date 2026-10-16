@@ -27,6 +27,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      azurite:
+        condition: service_started
     environment:
       DATABASE_URL: "postgres://${POSTGRES_USER:-titipdong}:${POSTGRES_PASSWORD:-titipdong-dev}@postgres:5432/${POSTGRES_DB:-titipdong}?sslmode=disable"
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
@@ -36,6 +38,10 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       PAYMENT_GATEWAY: ${PAYMENT_GATEWAY:-fake}
+      AZURE_STORAGE_CONNECTION_STRING: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;"
+      BLOB_CONTAINER: uploads
+      # Browsers reach Azurite on the host port, not the Docker hostname.
+      BLOB_PUBLIC_URL: http://localhost:10000
     ports:
       - "8080:8080"
     healthcheck:
@@ -46,5 +52,15 @@ services:
       retries: 5
       start_period: 10s
 
+  # Local Azure Blob Storage emulator; the account key is Azurite's public development key.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000", "--location", "/data", "--loose"]
+    ports:
+      - "10000:10000"
+    volumes:
+      - azurite-data:/data
+
 volumes:
   postgres-data:
+  azurite-data:

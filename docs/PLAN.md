@@ -19,8 +19,8 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: database       | Done. pgx v5 pool, sqlc, goose migrations embedded and applied at startup under an advisory lock    |
 | Platform: transactions   | Done. `database.WithTx` carries the transaction in `context.Context`                                |
 | Platform: observability  | Done. JSON logs with request ID, `/metrics`, local Prometheus/Grafana/Loki/Alloy stack              |
-| Platform: runtime        | Done. Readiness probe, graceful shutdown, background job runner, OpenAPI export, audit log writer   |
-| Platform: remaining      | To do. Blob uploads, CI checks                                                                      |
+| Platform: runtime        | Done. Readiness probe, graceful shutdown, job runner, OpenAPI export, audit log, blob uploads       |
+| Platform: remaining      | To do. CI checks                                                                                    |
 | F01 Auth & User          | Partial. Register, login, refresh, logout, `GET /me` done; profile, account status, `create-admin` to do |
 | F02 Trip & Catalog       | Partial. Create, list, get, close, my trips done; capacity, edit, cancel, catalog to do             |
 | F03 Order                | Partial. State machine, request, approve, reject, cancel done; capacity, photo, notifications, per-trip inbox to do |
@@ -88,10 +88,11 @@ Rules:
 2. **Services may call other features' services directly**, one direction only (Go forbids import cycles):
 
    ```
-   order    → trip, notification
+   order    → trip, upload, notification
+   trip     → upload
    payment  → order, notification
-   shipment → order, payment, notification
-   dispute  → order, payment, notification
+   shipment → order, payment, upload, notification
+   dispute  → order, payment, upload, notification
    admin    → auth, payment, … (any)
    ```
 
@@ -133,7 +134,7 @@ The service that starts a use case owns the transaction (for example `shipment.C
 - Money is `int64` whole rupiah in the database, JSON, and Go. No floats. Totals and fees are computed only in the
   backend.
 - Timestamps are `TIMESTAMPTZ`, serialized as RFC 3339.
-- Files are referenced by upload ID in requests; responses carry a short-lived signed URL for reading.
+- Files are referenced by upload ID in requests; responses carry a short-lived signed URL for reading (section 4.2).
 
 ## 4. Platform
 
@@ -148,12 +149,12 @@ The service that starts a use case owns the transaction (for example `shipment.C
 | Graceful shutdown  | Done  | On SIGTERM: stop the job loop, drain requests (`ShutdownWithContext`, 20 s), close the pool                      |
 | OpenAPI export     | Done  | `make openapi` (`api openapi > openapi.json`) registers every operation without a database                         |
 | Background jobs    | Done  | `platform/jobs`: a ticker loop started by `main`; each job runs under `pg_try_advisory_lock` and is idempotent; runs are counted in `background_jobs_total` |
-| Blob storage       | To do | `platform/blob` on `azblob`: SAS URLs for upload (write) and read, private container; Azurite in `compose.yaml`   |
-| Uploads            | To do | `uploads` table and `POST /uploads`; modules attach an upload by ID after checking owner, purpose, and that the blob exists |
+| Blob storage       | Done  | `platform/blob` on `azblob`: SAS URLs for upload (write) and read, private container; Azurite in `compose.yaml`   |
+| Uploads            | Done  | `internal/upload`: `uploads` table and `POST /uploads`; modules attach an upload by ID (section 4.2)               |
 | Audit log          | Done  | `platform/audit` writes `audit_logs` (with the request ID) inside money and admin transactions; F08 reads it      |
 | Clock              | Done  | Services that use deadlines take `now func() time.Time` so tests control time                                     |
 
-### Background jobs
+### 4.1 Background jobs
 
 All jobs are idempotent SQL sweeps, so a missed or repeated run is harmless. The runner exists; each job below is
 added together with its module.
@@ -164,10 +165,38 @@ added together with its module.
 | `orders.auto_release`   | 5 min   | `shipped` orders whose shipment is older than 7 days → `delivered` (system) → funds released    |
 | `trips.close_expired`   | 5 min   | `open` trips past `request_deadline` → `closed`; `closed` trips past `returns_on` with no active orders → `completed` |
 | `auth.purge_tokens`     | 1 hour  | Delete `refresh_tokens` rows past `expires_at`                                                  |
-| `uploads.purge_pending` | 1 hour  | Delete blobs and rows of uploads never attached after 24 hours                                  |
+| `uploads.purge_pending` | 1 hour  | Delete blobs and rows of uploads never attached after 24 hours (done)                           |
 
 The order expiry is also applied when an order is read or acted on, so behaviour does not depend on the loop's
 timing.
+
+### 4.2 File uploads
+
+Images (JPEG, PNG, WebP, at most 5 MB) go from the browser straight to a private Blob Storage container:
+
+1. `POST /uploads` `{ purpose, contentType, sizeBytes }` → `201 { id, uploadUrl, uploadMethod: "PUT", uploadHeaders,
+   expiresAt }`. The URL can only create that one blob and expires after 15 minutes.
+2. The browser sends `PUT uploadUrl` with the file as the body and every header in `uploadHeaders`
+   (`x-ms-blob-type: BlockBlob`, `Content-Type`).
+3. The browser sends the upload `id` to the endpoint that uses the file (for example `photoUploadId` on
+   `createOrder`). That module calls `upload.Service.Attach` in its own transaction, which checks the owner, the
+   purpose, that the blob exists, and that its type and size match; then it stores the object key.
+4. Responses expose the file through `upload.Service.ReadURL(key)`: a read-only URL valid for one hour.
+
+| Purpose            | Who can upload      | Used by                         |
+| ------------------ | ------------------- | ------------------------------- |
+| `order_photo`      | buyer               | F03 `createOrder`               |
+| `trip_item_photo`  | jastiper            | F02 catalog items               |
+| `shipment_proof`   | jastiper            | F05 `shipOrder`                 |
+| `dispute_evidence` | buyer, jastiper     | F06 dispute evidence            |
+
+Errors: 403 when the role cannot upload that purpose, 422 for type or size, 503 when storage is not configured
+(`AZURE_STORAGE_CONNECTION_STRING` empty). Attaching an unknown, foreign, or already used upload returns 422
+`Upload not found.`; attaching before the PUT returns 422 `File has not been uploaded yet.`
+
+Signed URLs are built with `sas.BlobSignatureValues` directly: `blob.Client.GetSASURL` in azblob v1.8 signs an
+escaped blob name for keys containing `/`. azblob stays on v1.8.0 because its service version (`2026-06-06`) is the
+newest one Azurite 3.37 accepts.
 
 ## 5. Tooling and testing
 
@@ -184,7 +213,8 @@ timing.
   - Service tests with an in-memory repository (fast, no database), as in `internal/auth/service_test.go`.
   - Handler tests through `httpserver.New()` for status codes, auth, and problem bodies.
   - Integration tests against real PostgreSQL for the ledger, the state machine, and cross-module transactions.
-    They skip unless `TEST_DATABASE_URL` is set.
+    They skip unless `TEST_DATABASE_URL` is set; the upload test also needs `TEST_AZURE_STORAGE_CONNECTION_STRING`
+    (Azurite from `compose.yaml`).
   - k6 load test in `monitoring/k6/`.
 
 ## 6. Delivery and infrastructure
@@ -197,7 +227,7 @@ timing.
 | PR workflow running `make check`     | To do | Also uploads the OpenAPI export as an artifact for the FE                               |
 | Readiness probe on `/health/ready`, `preStop` | Done | Graceful rollouts without dropped requests                     |
 | Resource requests and limits         | To do |                                                                                         |
-| Blob Storage account and container   | To do | Connection string in the same Secret                                                    |
+| Blob Storage account                 | To do | `AZURE_STORAGE_CONNECTION_STRING` in the same Secret; the API creates the container and CORS rules on start |
 | Remaining env in the Deployment      | To do | `CORS_ORIGINS`, `COOKIE_SECURE`, `PAYMENT_GATEWAY`, blob settings                       |
 
 Migrations run at API startup under an advisory lock, which is safe with several replicas.

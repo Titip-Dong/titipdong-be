@@ -743,7 +743,7 @@ CREATE INDEX audit_logs_created_idx ON audit_logs (created_at DESC, id DESC);
 
 Protected like the ledger: the `ledger_append_only` trigger rejects `UPDATE` and `DELETE`.
 
-### `uploads` (to add)
+### `uploads` (exists)
 
 Files go straight from the browser to Blob Storage with a short-lived SAS URL. This table records what the backend
 issued, so a module only accepts an upload the same user created for that purpose, and only after the blob exists.
@@ -754,14 +754,15 @@ CREATE TABLE uploads (
     owner_id     UUID NOT NULL REFERENCES users (id),
     purpose      TEXT NOT NULL CHECK (purpose IN (
                      'order_photo', 'trip_item_photo', 'shipment_proof', 'dispute_evidence')),
-    object_key   TEXT NOT NULL UNIQUE,
+    object_key   TEXT NOT NULL UNIQUE,                  -- <purpose>/<id>.<ext>
     content_type TEXT NOT NULL,
-    size_bytes   BIGINT CHECK (size_bytes > 0),
+    size_bytes   BIGINT NOT NULL CHECK (size_bytes > 0), -- declared size, replaced by the real size on attach
     status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'attached')),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    attached_at  TIMESTAMPTZ
+    attached_at  TIMESTAMPTZ,
+    CHECK ((status = 'attached') = (attached_at IS NOT NULL))
 );
-CREATE INDEX uploads_cleanup_idx ON uploads (created_at) WHERE status <> 'attached';
+CREATE INDEX uploads_cleanup_idx ON uploads (created_at) WHERE status = 'pending';
 ```
 
 The `uploads.purge_pending` job deletes blobs and rows that were never attached after 24 hours.

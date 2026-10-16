@@ -14,6 +14,10 @@ type Config struct {
 	// Browsers other than Chrome drop Secure cookies on http://localhost.
 	CookieSecure   bool
 	PaymentGateway string
+	// Uploads are disabled when BlobConnectionString is empty.
+	BlobConnectionString string
+	BlobContainer        string
+	BlobPublicURL        string
 }
 
 func Load() (Config, error) {
@@ -29,6 +33,12 @@ func Load() (Config, error) {
 	}
 	if c.PaymentGateway != "fake" {
 		return Config{}, fmt.Errorf("PAYMENT_GATEWAY %q is not supported yet; use fake", c.PaymentGateway)
+	}
+	c.BlobConnectionString = os.Getenv("AZURE_STORAGE_CONNECTION_STRING")
+	c.BlobPublicURL = os.Getenv("BLOB_PUBLIC_URL")
+	c.BlobContainer = os.Getenv("BLOB_CONTAINER")
+	if c.BlobContainer == "" {
+		c.BlobContainer = "uploads"
 	}
 	origins := os.Getenv("CORS_ORIGINS")
 	if origins == "" {
@@ -59,6 +69,9 @@ func loadLocalEnv(path string) {
 			continue
 		}
 		key, value, ok := strings.Cut(line, "=")
+		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+			value = value[1 : len(value)-1]
+		}
 		if ok && os.Getenv(key) == "" {
 			_ = os.Setenv(key, value)
 		}

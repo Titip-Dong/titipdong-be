@@ -14,6 +14,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/blob"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/config"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/httpserver"
@@ -22,6 +23,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/platform/monitoring"
 	"github.com/Titip-Dong/titipdong-be/internal/shipment"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -68,12 +70,17 @@ func run(cfg config.Config) error {
 		return seedDemo(ctx, pool)
 	}
 
+	store, err := blobStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
 	metrics := monitoring.New()
 	app, api := httpserver.NewWithMetrics(metrics, cfg.CORSOrigins...)
 	httpserver.RegisterReadiness(api, pool.Ping)
-	registerRoutes(api, pool, cfg)
+	backgroundJobs := registerRoutes(api, pool, cfg, store)
 
-	runner := jobs.New(pool)
+	runner := jobs.New(pool, backgroundJobs...)
 	runner.Observe(func(job, outcome string, d time.Duration) { metrics.ObserveBackgroundJob(job, outcome, d) })
 	runner.Start(ctx)
 
@@ -100,10 +107,32 @@ func run(cfg config.Config) error {
 	return nil
 }
 
-func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config) {
+func blobStore(ctx context.Context, cfg config.Config) (*blob.Store, error) {
+	if cfg.BlobConnectionString == "" {
+		slog.Warn("file uploads disabled: AZURE_STORAGE_CONNECTION_STRING is not set")
+		return nil, nil
+	}
+	store, err := blob.New(blob.Config{
+		ConnectionString: cfg.BlobConnectionString,
+		Container:        cfg.BlobContainer,
+		PublicURL:        cfg.BlobPublicURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Setup(ctx, cfg.CORSOrigins); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+// registerRoutes wires every module and returns their background jobs.
+func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config, store *blob.Store) []jobs.Job {
+	uploadService := upload.NewService(pool, store)
 	authService := auth.NewService(pool, cfg.JWTSecret)
 	api.UseMiddleware(auth.Middleware(api, authService))
 	auth.NewHandler(authService, cfg.CookieSecure).RegisterRoutes(api)
+	upload.NewHandler(uploadService).RegisterRoutes(api)
 	tripService := trip.NewService(pool)
 	trip.NewHandler(tripService).RegisterRoutes(api)
 	orderService := order.NewService(pool, tripService)
@@ -111,4 +140,8 @@ func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config) {
 	paymentService := payment.NewService(pool, orderService, payment.FakeGateway{})
 	payment.NewHandler(paymentService, cfg.PaymentGateway == "fake").RegisterRoutes(api)
 	shipment.NewHandler(shipment.NewService(pool, orderService, paymentService)).RegisterRoutes(api)
+
+	return []jobs.Job{
+		{Name: "uploads.purge_pending", Every: time.Hour, Run: uploadService.PurgePending},
+	}
 }

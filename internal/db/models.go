@@ -134,6 +134,18 @@ type Trip struct {
 	UpdatedAt          time.Time
 }
 
+type Upload struct {
+	ID          uuid.UUID
+	OwnerID     uuid.UUID
+	Purpose     string
+	ObjectKey   string
+	ContentType string
+	SizeBytes   int64
+	Status      string
+	CreatedAt   time.Time
+	AttachedAt  *time.Time
+}
+
 type User struct {
 	ID           uuid.UUID
 	Name         string

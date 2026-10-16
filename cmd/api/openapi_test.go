@@ -22,7 +22,7 @@ func TestOpenAPISpecIncludesEveryModule(t *testing.T) {
 	}
 	for _, path := range []string{
 		"/health", "/health/ready", "/auth/login", "/trips", "/trips/{slug}/orders",
-		"/orders/{id}/payments", "/payments/{id}/simulate", "/orders/{id}/shipment",
+		"/orders/{id}/payments", "/payments/{id}/simulate", "/orders/{id}/shipment", "/uploads",
 	} {
 		if _, ok := spec.Paths[path]; !ok {
 			t.Errorf("spec does not document %s", path)

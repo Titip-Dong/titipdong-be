@@ -35,26 +35,26 @@ Nothing else needs installing: `make` runs sqlc, goose, and golangci-lint at pin
 
 ## Run locally
 
-1. Start the complete local application (PostgreSQL 16 and API) defined in `compose.yaml`:
-
-   ```sh
-   make db-up      # builds API and waits for PostgreSQL and API to be healthy
-   ```
-
-   If port 5432 is already taken (for example by a Homebrew PostgreSQL), run `POSTGRES_PORT=5433 make db-up` and use
-   port 5433 in `DATABASE_URL`.
-
-2. Configure the environment. `.env` is git-ignored and read on startup; real environment variables take
-   precedence.
+1. Configure the environment. `.env` is git-ignored; Compose and the API both read it, and real environment
+   variables take precedence.
 
    ```sh
    cp .env.example .env
    # set JWT_SECRET to the output of: openssl rand -base64 32
-   # DATABASE_URL already matches compose.yaml
+   # DATABASE_URL, POSTGRES_* and AZURE_STORAGE_CONNECTION_STRING already match compose.yaml
    ```
 
-3. The API is already running in Docker at `http://localhost:8080`; pending
-   migrations are applied on startup. To follow its JSON logs:
+   PostgreSQL is published on port 5433 so it does not clash with a local PostgreSQL on 5432.
+
+2. Start the complete local application defined in `compose.yaml`: PostgreSQL 16, Azurite (Blob Storage emulator
+   on port 10000), and the API.
+
+   ```sh
+   make db-up      # rebuilds the API image and waits until everything is healthy
+   make seed       # demo accounts
+   ```
+
+3. The API runs at `http://localhost:8080`; pending migrations are applied on startup. To follow its JSON logs:
 
    ```sh
    docker compose logs -f api
@@ -68,6 +68,12 @@ Nothing else needs installing: `make` runs sqlc, goose, and golangci-lint at pin
 | `DATABASE_URL` | yes      | PostgreSQL connection string                 |
 | `JWT_SECRET`   | yes      | HMAC key for access tokens, ≥ 32 characters  |
 | `PORT`         | no       | Listen port, default `8080`                  |
+| `CORS_ORIGINS` | no       | Comma-separated frontend origins, default `http://localhost:5173`; also applied to Blob Storage CORS |
+| `COOKIE_SECURE`| no       | `false` for plain-HTTP local development; default `true` |
+| `PAYMENT_GATEWAY` | no    | Only `fake` is supported                     |
+| `AZURE_STORAGE_CONNECTION_STRING` | no | Blob Storage (or Azurite) with an account key; uploads are disabled when empty |
+| `BLOB_CONTAINER` | no     | Private container for uploads, default `uploads` |
+| `BLOB_PUBLIC_URL` | no    | Scheme and host browsers use for signed URLs, when it differs from the connection string (Azurite in Docker) |
 
 ## Commands
 
