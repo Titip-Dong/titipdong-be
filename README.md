@@ -92,6 +92,7 @@ Run `make` to list every command. The common ones:
   client from it (`pnpm api` in `titipdong-fe`).
 - `GET /docs`: interactive API docs.
 - `GET /health`: liveness probe.
+- `GET /health/ready`: readiness probe; 503 while PostgreSQL is unreachable.
 - Demo accounts: `make seed` creates `jastiper@titipdong.test`, `buyer@titipdong.test`, and `admin@titipdong.test`
   (password `demo12345`).
 - Payments use a fake gateway: after `POST /orders/{id}/payments`, call `POST /payments/{id}/simulate` to pay.

@@ -76,6 +76,37 @@ func TestRunnerKeepsRunningAfterErrorAndPanic(t *testing.T) {
 	}
 }
 
+func TestRunnerObservesOutcomes(t *testing.T) {
+	var mu sync.Mutex
+	outcomes := map[string]int{}
+	var runs atomic.Int32
+	r := newTestRunner(Job{Name: "observed", Every: 5 * time.Millisecond, Run: func(context.Context) error {
+		if runs.Add(1) == 1 {
+			return errors.New("boom")
+		}
+		return nil
+	}})
+	r.Observe(func(job, outcome string, _ time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		if job != "observed" {
+			t.Errorf("job = %q, want observed", job)
+		}
+		outcomes[outcome]++
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	r.Start(ctx)
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	r.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if outcomes["error"] != 1 || outcomes["success"] < 1 {
+		t.Fatalf("outcomes = %v, want 1 error and at least 1 success", outcomes)
+	}
+}
+
 func TestRunnerStopsOnCancel(t *testing.T) {
 	r := newTestRunner(Job{Name: "slow", Every: time.Hour, Run: func(ctx context.Context) error {
 		<-ctx.Done()

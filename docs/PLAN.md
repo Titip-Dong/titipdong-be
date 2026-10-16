@@ -19,7 +19,8 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: database       | Done. pgx v5 pool, sqlc, goose migrations embedded and applied at startup under an advisory lock    |
 | Platform: transactions   | Done. `database.WithTx` carries the transaction in `context.Context`                                |
 | Platform: observability  | Done. JSON logs with request ID, `/metrics`, local Prometheus/Grafana/Loki/Alloy stack              |
-| Platform: remaining      | To do. Readiness probe, graceful shutdown, OpenAPI export command, background jobs, blob uploads, audit log, PR checks |
+| Platform: runtime        | Done. Readiness probe, graceful shutdown, background job runner                                     |
+| Platform: remaining      | To do. OpenAPI export command, blob uploads, audit log, CI checks                                   |
 | F01 Auth & User          | Partial. Register, login, refresh, logout, `GET /me` done; profile, account status, `create-admin` to do |
 | F02 Trip & Catalog       | Partial. Create, list, get, close, my trips done; capacity, edit, cancel, catalog to do             |
 | F03 Order                | Partial. State machine, request, approve, reject, cancel done; capacity, photo, notifications, per-trip inbox to do |
@@ -143,10 +144,10 @@ The service that starts a use case owns the transaction (for example `shipment.C
 | CORS               | Done  | Allow-list from `CORS_ORIGINS`, `Allow-Credentials: true` for the refresh cookie                                   |
 | Transactions       | Done  | `database.WithTx` / `database.Conn` (section 3.3)                                                                 |
 | Metrics            | Done  | `/metrics` (Prometheus): request count and latency by route and status, Go runtime                                |
-| Readiness          | To do | `/health` stays liveness (no dependencies); `/health/ready` pings PostgreSQL and is the k8s readiness probe       |
-| Graceful shutdown  | To do | On SIGTERM: stop the job loop, drain requests (`ShutdownWithContext`), close the pool                            |
+| Readiness          | Done  | `/health` stays liveness (no dependencies); `/health/ready` pings PostgreSQL and is the k8s readiness probe       |
+| Graceful shutdown  | Done  | On SIGTERM: stop the job loop, drain requests (`ShutdownWithContext`, 20 s), close the pool                      |
 | OpenAPI export     | To do | `api openapi > openapi.json` registers every operation without a database, so CI and the FE can use it offline     |
-| Background jobs    | To do | `platform/jobs`: a ticker loop started by `main`; each job runs under `pg_try_advisory_lock` and is idempotent    |
+| Background jobs    | Done  | `platform/jobs`: a ticker loop started by `main`; each job runs under `pg_try_advisory_lock` and is idempotent; runs are counted in `background_jobs_total` |
 | Blob storage       | To do | `platform/blob` on `azblob`: SAS URLs for upload (write) and read, private container; Azurite in `compose.yaml`   |
 | Uploads            | To do | `uploads` table and `POST /uploads`; modules attach an upload by ID after checking owner, purpose, and that the blob exists |
 | Audit log          | To do | `platform/audit` writes `audit_logs` inside money and admin transactions; F08 reads it                            |
@@ -154,7 +155,8 @@ The service that starts a use case owns the transaction (for example `shipment.C
 
 ### Background jobs
 
-All jobs are idempotent SQL sweeps, so a missed or repeated run is harmless.
+All jobs are idempotent SQL sweeps, so a missed or repeated run is harmless. The runner exists; each job below is
+added together with its module.
 
 | Job                     | Every   | Action                                                                                         |
 | ----------------------- | ------- | ---------------------------------------------------------------------------------------------- |
@@ -193,7 +195,8 @@ timing.
 | Secrets for `DATABASE_URL`, `JWT_SECRET` | Done | Secret `titipdong-api-secrets`, wired with `secretKeyRef`                             |
 | 2 replicas with anti-affinity        | Done  | `deploy/k8s/deployment.yaml`                                                             |
 | PR workflow running `make check`     | To do | Also uploads the OpenAPI export as an artifact for the FE                               |
-| Readiness probe on `/health/ready`, `preStop`, resource limits | To do | Graceful rollouts without dropped requests        |
+| Readiness probe on `/health/ready`, `preStop` | Done | Graceful rollouts without dropped requests                     |
+| Resource requests and limits         | To do |                                                                                         |
 | Blob Storage account and container   | To do | Connection string in the same Secret                                                    |
 | Remaining env in the Deployment      | To do | `CORS_ORIGINS`, `COOKIE_SECURE`, `PAYMENT_GATEWAY`, blob settings                       |
 

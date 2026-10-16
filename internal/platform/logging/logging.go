@@ -46,7 +46,7 @@ func newLogger(writer io.Writer) *slog.Logger {
 // headers, request bodies, credentials, or personally identifiable data.
 func RequestMiddleware(logger *slog.Logger) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		if c.Path() == "/health" || c.Path() == "/metrics" {
+		if c.Path() == "/health" || c.Path() == "/health/ready" || c.Path() == "/metrics" {
 			return c.Next()
 		}
 

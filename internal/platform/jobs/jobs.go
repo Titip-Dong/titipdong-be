@@ -26,13 +26,19 @@ type locker interface {
 }
 
 type Runner struct {
-	locker locker
-	jobs   []Job
-	wg     sync.WaitGroup
+	locker  locker
+	jobs    []Job
+	observe func(job, outcome string, duration time.Duration)
+	wg      sync.WaitGroup
 }
 
 func New(pool *pgxpool.Pool, jobs ...Job) *Runner {
 	return &Runner{locker: pgLocker{pool: pool}, jobs: jobs}
+}
+
+// Observe reports every completed run with outcome "success" or "error".
+func (r *Runner) Observe(fn func(job, outcome string, duration time.Duration)) {
+	r.observe = fn
 }
 
 // Start runs every job once and then on its interval until ctx is done.
@@ -77,11 +83,18 @@ func (r *Runner) runOnce(ctx context.Context, j Job) {
 		}()
 		return j.Run(ctx)
 	})
-	switch {
-	case err != nil && ctx.Err() == nil:
+	if ctx.Err() != nil || (!ran && err == nil) {
+		return
+	}
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
 		slog.ErrorContext(ctx, "job_failed", "job", j.Name, "error", err)
-	case ran:
+	} else {
 		slog.DebugContext(ctx, "job_completed", "job", j.Name, "duration_ms", time.Since(started).Milliseconds())
+	}
+	if r.observe != nil {
+		r.observe(j.Name, outcome, time.Since(started))
 	}
 }
 

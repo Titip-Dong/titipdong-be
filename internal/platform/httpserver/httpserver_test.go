@@ -1,7 +1,9 @@
 package httpserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +28,30 @@ func TestHealth(t *testing.T) {
 	}
 	if len(body) != 1 || body["status"] != "ok" {
 		t.Errorf("body = %v, want {\"status\":\"ok\"}", body)
+	}
+}
+
+func TestReadiness(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		check error
+		want  int
+	}{
+		{"ready", nil, http.StatusOK},
+		{"database down", errors.New("connection refused"), http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app, api := New()
+			RegisterReadiness(api, func(context.Context) error { return tc.check })
+			res, err := app.Test(httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			defer func() { _ = res.Body.Close() }()
+			if res.StatusCode != tc.want {
+				t.Fatalf("status code = %d, want %d", res.StatusCode, tc.want)
+			}
+		})
 	}
 }
 
