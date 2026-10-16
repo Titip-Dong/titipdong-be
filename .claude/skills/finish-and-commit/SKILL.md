@@ -39,10 +39,21 @@ TEST_DATABASE_URL="$DATABASE_URL" go test ./... -count=1
   (a migration-only commit, then a handler commit).
 - Separate commits for: pure refactors (`refactor`), docs-only changes (`docs`), tooling/config (`chore`), and fixes
   to earlier work (`fix`).
-- **Push per module or phase**: when every planned item on the branch is committed and `make check` plus the
-  integration tests pass, push the branch and open one PR to `main`, titled like the main commit
-  (`feat(notification): in-app notifications`), with a body listing the items done and how it was tested.
-- Push or open the PR only after the user agrees in this conversation.
+- **Merge per module or phase, no PR**: when every planned item on the branch is committed and `make check` plus the
+  integration tests pass, summarize the commits and test results and **ask the user** whether to merge into `main`.
+  Only after an explicit yes in this conversation:
+
+  ```sh
+  git switch main && git pull --ff-only
+  git merge --no-ff feat/<branch> -m "Merge branch 'feat/<branch>'"
+  make check                      # main must stay green
+  git push origin main
+  git branch -d feat/<branch>
+  ```
+
+  Pushing `main` triggers `.github/workflows/deploy-aks.yml` (build and rollout to AKS), so say that when asking. If
+  the merge conflicts or `make check` fails on `main`, stop and report; do not push.
+- Feature branches are not pushed on their own unless the user asks.
 
 ### Message
 - Message: Conventional Commits with a module scope, imperative, lowercase, no trailing period:
