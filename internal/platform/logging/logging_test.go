@@ -26,7 +26,7 @@ func TestRequestMiddlewareLogsSafeStructuredFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	line := output.String()
 	for _, value := range []string{"request_completed", `"route":"/example"`, `"status":201`} {

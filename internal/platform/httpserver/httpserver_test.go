@@ -90,7 +90,7 @@ func TestMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("status code = %d, want %d", res.StatusCode, http.StatusOK)
@@ -121,7 +121,7 @@ func TestRequestLogMiddlewareSetsRequestID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if requestID := res.Header.Get("X-Request-ID"); requestID == "" {
 		t.Error("X-Request-ID header is empty")
