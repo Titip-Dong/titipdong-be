@@ -9,10 +9,10 @@ source of truth, and its file is kept in sync with them.
 | F01 | [Auth & User](auth.md)              | `internal/auth`         | Partial: session done; profile, account status, `create-admin` to do   |
 | F02 | [Trip & Catalog](trip.md)           | `internal/trip`         | Partial: core and capacity done; edit, cancel, catalog to do          |
 | F03 | [Order](order.md)                   | `internal/order`        | Partial: state machine, notifications, capacity done; photo to do     |
-| F04 | [Payment & Escrow](payment.md)      | `internal/payment`      | Partial: checkout, ledger, release done; refunds, payouts to do        |
+| F04 | [Payment & Escrow](payment.md)      | `internal/payment`      | Partial: checkout, ledger, release, refunds, payouts done; wallet history, auto-release to do |
 | F05 | [Shipment](shipment.md)             | `internal/shipment`     | Partial: ship and confirm done; proof photo to do                      |
 | F06 | [Dispute](dispute.md)               | `internal/dispute`      | To do                                                                  |
-| F07 | [Notification](notification.md)     | `internal/notification` | Partial: order, payment, shipment events done; refund, dispute, payout to do |
+| F07 | [Notification](notification.md)     | `internal/notification` | Partial: all order, payment, payout events done; dispute events to do |
 | F08 | [Admin](admin.md)                   | `internal/admin`        | To do                                                                  |
 
 Scope decisions (fake payment gateway, in-process jobs, Azure Blob uploads, in-app notifications only) and what is
