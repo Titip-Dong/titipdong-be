@@ -12,3 +12,8 @@ WHERE LOWER(email) = LOWER(sqlc.arg(email));
 SELECT id, name, email, role, created_at
 FROM users
 WHERE id = $1;
+
+-- name: ListAdminIDs :many
+SELECT id FROM users
+WHERE role = 'admin'
+ORDER BY id;

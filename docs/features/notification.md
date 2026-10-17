@@ -4,7 +4,7 @@
 | ------- | ----------------------- |
 | Package | `internal/notification` |
 | Tag     | `notification`          |
-| Status  | To do                   |
+| Status  | Partial: endpoints done; order, payment, shipment events wired; refund, dispute, payout events wait on those features |
 
 ## Overview
 
@@ -84,12 +84,34 @@ Indexes: `(user_id, created_at DESC, id DESC)`, partial `(user_id) WHERE read_at
 
 ## Endpoints
 
-| Method | Path                            | operationId                | Auth     | Description                    |
-| ------ | ------------------------------- | -------------------------- | -------- | ------------------------------ |
-| `GET`  | `/notifications`                | `listNotifications`        | Any role | Newest first; filter `unread`; cursor |
-| `GET`  | `/notifications/unread-count`   | `getUnreadCount`           | Any role | `{ count }`                    |
-| `POST` | `/notifications/{id}/read`      | `markNotificationRead`     | Any role | Owner only (else 404); 204     |
-| `POST` | `/notifications/read-all`       | `markAllNotificationsRead` | Any role | Marks all unread as read; 204  |
+| Method | Path                            | operationId                | Auth     | Status | Description                    |
+| ------ | ------------------------------- | -------------------------- | -------- | ------ | ------------------------------ |
+| `GET`  | `/notifications`                | `listNotifications`        | Any role | Done   | Newest first; filter `unread`; cursor |
+| `GET`  | `/notifications/unread-count`   | `getUnreadCount`           | Any role | Done   | `{ count }`                    |
+| `POST` | `/notifications/{id}/read`      | `markNotificationRead`     | Any role | Done   | Owner only (else 404); idempotent; 204 |
+| `POST` | `/notifications/read-all`       | `markAllNotificationsRead` | Any role | Done   | Marks all unread as read; 204  |
+
+### `GET /notifications`
+
+Query: `unread` (bool, default `false`), `limit` (1–100, default 20), `cursor`. Response:
+
+```json
+{
+  "items": [
+    {
+      "id": "0192…",
+      "type": "order.approved",
+      "data": { "orderId": "0192…", "orderCode": "TD-7KQ2MX", "total": 1250000, "paymentDeadline": "2026-10-18T09:00:00Z" },
+      "readAt": null,
+      "createdAt": "2026-10-17T09:00:00Z"
+    }
+  ],
+  "nextCursor": "…"
+}
+```
+
+`readAt` is omitted while unread. Errors: 401, 422 (bad cursor or limit). Marking an already-read notification
+again keeps the first `readAt` and returns 204.
 
 ### Service API
 
@@ -100,7 +122,7 @@ type Event struct {
     Data       map[string]any
 }
 
-Notify(ctx context.Context, e Event) error   // inserts one row per recipient on ctx's transaction
+Notify(ctx context.Context, e Event) error   // one row per distinct recipient on ctx's transaction; uuid.Nil is skipped
 AdminIDs(ctx context.Context) ([]uuid.UUID, error)
 ```
 
@@ -159,7 +181,16 @@ end
 
 ## Remaining work
 
-- [ ] Migration `create_notifications` and queries.
-- [ ] `Notify` and `AdminIDs`.
-- [ ] `listNotifications`, `getUnreadCount`, `markNotificationRead`, `markAllNotificationsRead`.
-- [ ] Wire `Notify` into Order, Payment, Shipment, and Dispute for every event type above.
+Done:
+
+- [x] Migration `create_notifications` and queries.
+- [x] `Notify` and `AdminIDs`.
+- [x] `listNotifications`, `getUnreadCount`, `markNotificationRead`, `markAllNotificationsRead`.
+- [x] Service and handler tests; integration test that a rolled-back transaction leaves no notification.
+- [x] `Notify` wired into Order (`order.requested`, `order.approved`, `order.rejected`, `order.cancelled` including
+      the payment-deadline expiry), Payment (`payment.received`, `order.released`), and Shipment (`order.shipped`).
+
+Remaining:
+
+- [ ] `order.refunded`, `payout.paid`, `payout.rejected`: with F04 refunds and payouts.
+- [ ] `dispute.opened`, `dispute.message`, `dispute.resolved`: with F06.

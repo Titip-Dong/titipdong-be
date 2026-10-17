@@ -24,8 +24,8 @@ type repository interface {
 	UpdateStatus(ctx context.Context, o Order) error
 	InsertEvent(ctx context.Context, orderID uuid.UUID, e Event) error
 	Events(ctx context.Context, orderID uuid.UUID) ([]Event, error)
-	// ExpireUnpaid cancels every approved order whose payment deadline has passed.
-	ExpireUnpaid(ctx context.Context, now time.Time) error
+	// ExpireUnpaid cancels every approved order whose payment deadline has passed and returns them.
+	ExpireUnpaid(ctx context.Context, now time.Time) ([]Order, error)
 }
 
 type pgRepository struct {
@@ -148,8 +148,19 @@ func (r *pgRepository) Events(ctx context.Context, orderID uuid.UUID) ([]Event, 
 	return events, nil
 }
 
-func (r *pgRepository) ExpireUnpaid(ctx context.Context, now time.Time) error {
-	return r.q(ctx).ExpireUnpaidOrders(ctx, now)
+func (r *pgRepository) ExpireUnpaid(ctx context.Context, now time.Time) ([]Order, error) {
+	rows, err := r.q(ctx).ExpireUnpaidOrders(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	orders := make([]Order, len(rows))
+	for i, row := range rows {
+		orders[i] = Order{
+			ID: row.ID, Code: row.Code, BuyerID: row.BuyerID, JastiperID: row.JastiperID,
+			Status: StatusCancelled, StatusReason: row.StatusReason,
+		}
+	}
+	return orders, nil
 }
 
 func toOrder(o db.Order, tripSlug, tripTitle, buyerName, jastiperName string) Order {

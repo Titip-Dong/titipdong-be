@@ -32,33 +32,36 @@ TEST_DATABASE_URL="$DATABASE_URL" go test ./... -count=1
 
 ### Granularity
 
-- **Branch per module or phase**, from an up-to-date `main`: `feat/platform`, `feat/notification`, `feat/trip`,
-  `feat/dispute`, … Never commit directly to `main` unless asked.
+- **Branches**: `main` is production (every push deploys), `dev` is integration. Feature branches are cut from an
+  up-to-date `dev` (`git switch dev && git pull --ff-only && git switch -c feat/<module>`): `feat/notification`,
+  `feat/trip`, `feat/dispute`, … Never commit directly to `dev` or `main`.
 - **One commit per item of the module's "Remaining work" list.** Each commit is complete for that item (migration,
   queries, regenerated sqlc, code, tests, docs) and passes `make check` on its own. Never split one item by layer
   (a migration-only commit, then a handler commit).
 - Separate commits for: pure refactors (`refactor`), docs-only changes (`docs`), tooling/config (`chore`), and fixes
   to earlier work (`fix`).
-- **Merge per module or phase, no PR**: when every planned item on the branch is committed and `make check` plus the
-  integration tests pass, summarize the commits and test results and **ask the user** whether to merge into `main`.
+- **Feature → `dev`, no PR**: when every planned item on the branch is committed and `make check` plus the
+  integration tests pass, summarize the commits and test results and **ask the user** whether to merge into `dev`.
   Only after an explicit yes in this conversation:
 
   ```sh
-  git switch main && git pull --ff-only
-  git merge --no-ff feat/<branch> -m "Merge branch 'feat/<branch>'"
-  make check                      # main must stay green
-  git push origin main
+  git switch dev && git pull --ff-only
+  git merge --no-ff feat/<branch> -m "Merge branch 'feat/<branch>' into dev"
+  make check                      # dev must stay green
+  git push origin dev             # runs check.yml, no deploy
   git branch -d feat/<branch>
   ```
 
-  Pushing `main` triggers `.github/workflows/deploy-aks.yml` (build and rollout to AKS), so say that when asking. If
-  the merge conflicts or `make check` fails on `main`, stop and report; do not push.
+  If the merge conflicts or `make check` fails on `dev`, stop and report; do not push.
+- **`dev` → `main` only when the user asks for a release.** Same steps with `dev` merged into `main`
+  (`Merge branch 'dev'`). Pushing `main` triggers `.github/workflows/deploy-aks.yml` (build and rollout to AKS), so
+  say that when asking.
 - Feature branches are not pushed on their own unless the user asks.
 
 ### Message
 - Message: Conventional Commits with a module scope, imperative, lowercase, no trailing period:
   `feat(order): reserve trip capacity on create`, `fix(payment): ...`, `docs(trip): ...`,
-  `refactor(platform): ...`, `chore(dev): ...`, `test(payment): ...`. Optional body explains why.
+  `refactor(platform): ...`, `chore(dev): ...`, `test(payment): ...`. Subject line only: no body/description (`git commit -m "<subject>"` once).
 - **No AI attribution**: no `Co-Authored-By: Claude`, no "Generated with Claude Code", no session links. Do not pass
   `--author` or override `user.name` / `user.email`; the commit belongs to the local git identity.
 - Never force-push or rewrite pushed history unless the user asked.

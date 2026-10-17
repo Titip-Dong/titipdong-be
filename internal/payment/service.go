@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,19 +55,20 @@ type Service interface {
 	JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error)
 }
 
-func NewService(pool *pgxpool.Pool, orders order.Service, gw Gateway) Service {
-	return newService(newRepository(pool), orders, gw, time.Now)
+func NewService(pool *pgxpool.Pool, orders order.Service, notifier notification.Service, gw Gateway) Service {
+	return newService(newRepository(pool), orders, notifier, gw, time.Now)
 }
 
 type service struct {
-	repo    repository
-	orders  order.Service
-	gateway Gateway
-	now     func() time.Time
+	repo     repository
+	orders   order.Service
+	notifier notification.Service
+	gateway  Gateway
+	now      func() time.Time
 }
 
-func newService(repo repository, orders order.Service, gw Gateway, now func() time.Time) *service {
-	return &service{repo: repo, orders: orders, gateway: gw, now: now}
+func newService(repo repository, orders order.Service, notifier notification.Service, gw Gateway, now func() time.Time) *service {
+	return &service{repo: repo, orders: orders, notifier: notifier, gateway: gw, now: now}
 }
 
 func (s *service) Checkout(ctx context.Context, buyerID, orderID uuid.UUID) (Payment, error) {
@@ -158,8 +160,15 @@ func (s *service) Settle(ctx context.Context, paymentID uuid.UUID, providerTrans
 		if err != nil {
 			return err
 		}
-		_, err = s.orders.MarkPaid(ctx, p.OrderID)
-		return err
+		o, err := s.orders.MarkPaid(ctx, p.OrderID)
+		if err != nil {
+			return err
+		}
+		return s.notifier.Notify(ctx, notification.Event{
+			Type:       notification.TypePaymentReceived,
+			Recipients: []uuid.UUID{o.BuyerID, o.JastiperID},
+			Data:       map[string]any{"orderId": o.ID, "orderCode": o.Code, "amount": p.Amount},
+		})
 	})
 	return p, err
 }
@@ -213,7 +222,14 @@ func (s *service) Release(ctx context.Context, orderID uuid.UUID) (order.Order, 
 			return err
 		}
 		released, err = s.orders.MarkReleased(ctx, o.ID)
-		return err
+		if err != nil {
+			return err
+		}
+		return s.notifier.Notify(ctx, notification.Event{
+			Type:       notification.TypeOrderReleased,
+			Recipients: []uuid.UUID{o.JastiperID},
+			Data:       map[string]any{"orderId": o.ID, "orderCode": o.Code, "amount": total - fee},
+		})
 	})
 	return released, err
 }

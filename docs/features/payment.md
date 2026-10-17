@@ -368,6 +368,8 @@ Done:
 - [x] `POST /orders/{id}/payments` (refused after the deadline), `POST /payments/{id}/simulate`.
 - [x] `Release(orderID)` with the 5% fee, called by Shipment.
 - [x] `GET /wallet` balance.
+- [x] Notifications `payment.received` (buyer, jastiper) and `order.released` (jastiper share) in the same
+      transaction.
 - [x] Integration tests: ledger balance, checkout after the deadline, payment → release.
 
 Remaining:
@@ -375,8 +377,8 @@ Remaining:
 - [ ] `Gateway.Refund` (fake succeeds), `refunds` table, `Refund(...)`, `POST /orders/{id}/cancel-paid`.
 - [ ] `payout_accounts` and `payouts` tables, payout account and payout endpoints, admin payout endpoints.
 - [ ] `GET /wallet` gains `inEscrow` and `pendingPayout`; `GET /wallet/transactions`.
-- [ ] Notifications (`payment.received`, `order.released`, `order.refunded`, `payout.paid`, `payout.rejected`) and
-      audit log rows for releases, refunds, and payouts.
+- [ ] Notifications `order.refunded`, `payout.paid`, `payout.rejected` (with refunds and payouts) and audit log rows
+      for releases, refunds, and payouts.
 - [ ] Job `orders.auto_release`: for `shipped` orders shipped more than 7 days ago, `order.MarkDelivered(system)`
       then `Release`, one transaction per order.
 - [ ] Ledger summaries for F08 stats.

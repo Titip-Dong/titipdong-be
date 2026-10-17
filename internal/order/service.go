@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
 	"github.com/google/uuid"
@@ -159,18 +160,19 @@ type Service interface {
 	MarkRefunded(ctx context.Context, actor Actor, id uuid.UUID, reason string) (Order, error)
 }
 
-func NewService(pool *pgxpool.Pool, trips trip.Service) Service {
-	return newService(newRepository(pool), trips, time.Now)
+func NewService(pool *pgxpool.Pool, trips trip.Service, notifier notification.Service) Service {
+	return newService(newRepository(pool), trips, notifier, time.Now)
 }
 
 type service struct {
-	repo  repository
-	trips trip.Service
-	now   func() time.Time
+	repo     repository
+	trips    trip.Service
+	notifier notification.Service
+	now      func() time.Time
 }
 
-func newService(repo repository, trips trip.Service, now func() time.Time) *service {
-	return &service{repo: repo, trips: trips, now: now}
+func newService(repo repository, trips trip.Service, notifier notification.Service, now func() time.Time) *service {
+	return &service{repo: repo, trips: trips, notifier: notifier, now: now}
 }
 
 func (s *service) Create(ctx context.Context, buyerID uuid.UUID, tripSlug string, p CreateParams) (Order, error) {
@@ -205,7 +207,21 @@ func (s *service) Create(ctx context.Context, buyerID uuid.UUID, tripSlug string
 			if err := s.repo.CreateOrder(ctx, o); err != nil {
 				return err
 			}
-			return s.repo.InsertEvent(ctx, o.ID, Event{ToStatus: StatusRequested, ActorID: &buyerID, ActorType: ActorBuyer})
+			if err := s.repo.InsertEvent(ctx, o.ID, Event{ToStatus: StatusRequested, ActorID: &buyerID, ActorType: ActorBuyer}); err != nil {
+				return err
+			}
+			created, err := s.repo.Order(ctx, o.ID)
+			if err != nil {
+				return err
+			}
+			return s.notifier.Notify(ctx, notification.Event{
+				Type:       notification.TypeOrderRequested,
+				Recipients: []uuid.UUID{created.JastiperID},
+				Data: map[string]any{
+					"orderId": created.ID, "orderCode": created.Code,
+					"productName": created.ProductName, "buyerName": created.BuyerName,
+				},
+			})
 		})
 		if !errors.Is(err, errCodeTaken) {
 			break
@@ -222,7 +238,7 @@ func (s *service) List(ctx context.Context, userID uuid.UUID, p ListParams) (Pag
 	if err != nil {
 		return Page{}, err
 	}
-	if err := s.repo.ExpireUnpaid(ctx, s.now()); err != nil {
+	if err := s.expireUnpaid(ctx); err != nil {
 		return Page{}, err
 	}
 	orders, err := s.repo.List(ctx, userID, p.Status, p.TripID, before, p.Limit+1)
@@ -236,7 +252,7 @@ func (s *service) List(ctx context.Context, userID uuid.UUID, p ListParams) (Pag
 }
 
 func (s *service) Get(ctx context.Context, actor Actor, id uuid.UUID) (Order, []Event, error) {
-	if err := s.repo.ExpireUnpaid(ctx, s.now()); err != nil {
+	if err := s.expireUnpaid(ctx); err != nil {
 		return Order{}, nil, err
 	}
 	o, err := s.repo.Order(ctx, id)
@@ -262,6 +278,14 @@ func (s *service) Approve(ctx context.Context, jastiperID, id uuid.UUID, itemPri
 		total := itemPrice*int64(o.Quantity) + jastipFee
 		deadline := s.now().Add(paymentWindow)
 		o.ItemPrice, o.JastipFee, o.Total, o.PaymentDeadline = &itemPrice, &jastipFee, &total, &deadline
+	}, func(o Order) notification.Event {
+		return notification.Event{
+			Type:       notification.TypeOrderApproved,
+			Recipients: []uuid.UUID{o.BuyerID},
+			Data: map[string]any{
+				"orderId": o.ID, "orderCode": o.Code, "total": *o.Total, "paymentDeadline": *o.PaymentDeadline,
+			},
+		}
 	})
 }
 
@@ -270,11 +294,20 @@ func (s *service) Reject(ctx context.Context, jastiperID, id uuid.UUID, reason s
 	if reason == "" {
 		return Order{}, &InputError{Detail: "Reason must not be blank."}
 	}
-	return s.transition(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, id, StatusRejected, reason, nil)
+	return s.transition(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, id, StatusRejected, reason, nil,
+		func(o Order) notification.Event {
+			return notification.Event{
+				Type:       notification.TypeOrderRejected,
+				Recipients: []uuid.UUID{o.BuyerID},
+				Data:       map[string]any{"orderId": o.ID, "orderCode": o.Code, "reason": reason},
+			}
+		})
 }
 
 func (s *service) Cancel(ctx context.Context, buyerID, id uuid.UUID, reason string) (Order, error) {
-	return s.transition(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id, StatusCancelled, strings.TrimSpace(reason), nil)
+	reason = strings.TrimSpace(reason)
+	return s.transition(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id, StatusCancelled, reason, nil,
+		func(o Order) notification.Event { return cancelledEvent(o, []uuid.UUID{o.JastiperID}) })
 }
 
 func (s *service) Lock(ctx context.Context, id uuid.UUID) (Order, error) {
@@ -282,32 +315,32 @@ func (s *service) Lock(ctx context.Context, id uuid.UUID) (Order, error) {
 }
 
 func (s *service) MarkPaid(ctx context.Context, id uuid.UUID) (Order, error) {
-	return s.transition(ctx, System, id, StatusPaid, "", nil)
+	return s.transition(ctx, System, id, StatusPaid, "", nil, nil)
 }
 
 func (s *service) MarkShipped(ctx context.Context, jastiperID, id uuid.UUID) (Order, error) {
-	return s.transition(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, id, StatusShipped, "", nil)
+	return s.transition(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, id, StatusShipped, "", nil, nil)
 }
 
 func (s *service) MarkDelivered(ctx context.Context, actor Actor, id uuid.UUID) (Order, error) {
-	return s.transition(ctx, actor, id, StatusDelivered, "", nil)
+	return s.transition(ctx, actor, id, StatusDelivered, "", nil, nil)
 }
 
 func (s *service) MarkDisputed(ctx context.Context, buyerID, id uuid.UUID, reason string) (Order, error) {
-	return s.transition(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id, StatusDisputed, reason, nil)
+	return s.transition(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id, StatusDisputed, reason, nil, nil)
 }
 
 func (s *service) MarkReleased(ctx context.Context, id uuid.UUID) (Order, error) {
-	return s.transition(ctx, System, id, StatusReleased, "", nil)
+	return s.transition(ctx, System, id, StatusReleased, "", nil, nil)
 }
 
 func (s *service) MarkRefunded(ctx context.Context, actor Actor, id uuid.UUID, reason string) (Order, error) {
-	return s.transition(ctx, actor, id, StatusRefunded, reason, nil)
+	return s.transition(ctx, actor, id, StatusRefunded, reason, nil, nil)
 }
 
 // transition locks the order, checks ownership and the transition table, then
 // writes the new status and an event in one transaction.
-func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to Status, reason string, apply func(*Order)) (Order, error) {
+func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to Status, reason string, apply func(*Order), event func(Order) notification.Event) (Order, error) {
 	var out Order
 	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
 		o, err := s.repo.Lock(ctx, id)
@@ -336,9 +369,36 @@ func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to 
 			return err
 		}
 		out = o
-		return nil
+		if event == nil {
+			return nil
+		}
+		return s.notifier.Notify(ctx, event(o))
 	})
 	return out, err
+}
+
+// expireUnpaid cancels approved orders past their payment deadline and tells both parties.
+func (s *service) expireUnpaid(ctx context.Context) error {
+	return s.repo.WithTx(ctx, func(ctx context.Context) error {
+		expired, err := s.repo.ExpireUnpaid(ctx, s.now())
+		if err != nil {
+			return err
+		}
+		for _, o := range expired {
+			if err := s.notifier.Notify(ctx, cancelledEvent(o, []uuid.UUID{o.BuyerID, o.JastiperID})); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func cancelledEvent(o Order, recipients []uuid.UUID) notification.Event {
+	return notification.Event{
+		Type:       notification.TypeOrderCancelled,
+		Recipients: recipients,
+		Data:       map[string]any{"orderId": o.ID, "orderCode": o.Code, "reason": o.StatusReason},
+	}
 }
 
 func canSee(o Order, actor Actor) bool {

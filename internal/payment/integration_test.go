@@ -10,6 +10,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/db"
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
@@ -19,6 +20,7 @@ import (
 
 type fixture struct {
 	pool     *pgxpool.Pool
+	notifier notification.Service
 	orders   order.Service
 	svc      *service
 	buyer    uuid.UUID
@@ -51,11 +53,13 @@ func newFixture(t *testing.T, now func() time.Time) fixture {
 		return u.ID
 	}
 	trips := trip.NewService(pool)
-	orders := order.NewService(pool, trips)
+	notifier := notification.NewService(pool)
+	orders := order.NewService(pool, trips, notifier)
 	return fixture{
 		pool:     pool,
+		notifier: notifier,
 		orders:   orders,
-		svc:      newService(newRepository(pool), orders, FakeGateway{}, now),
+		svc:      newService(newRepository(pool), orders, notifier, FakeGateway{}, now),
 		buyer:    user(auth.RoleBuyer),
 		jastiper: user(auth.RoleJastiper),
 	}
@@ -96,6 +100,22 @@ func (f fixture) escrow(t *testing.T, orderID uuid.UUID) int64 {
 	return b
 }
 
+// notifications returns the user's notifications of type typ, newest first.
+func (f fixture) notifications(t *testing.T, userID uuid.UUID, typ string) []notification.Notification {
+	t.Helper()
+	page, err := f.notifier.List(context.Background(), userID, notification.ListParams{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []notification.Notification
+	for _, n := range page.Items {
+		if n.Type == typ {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 func TestPaymentToReleaseFlow(t *testing.T) {
 	f := newFixture(t, time.Now)
 	ctx := context.Background()
@@ -124,6 +144,12 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 	if got := f.escrow(t, o.ID); got != 100_001 {
 		t.Errorf("escrow after paying twice = %d, want 100001", got)
 	}
+	for _, user := range []uuid.UUID{f.buyer, f.jastiper} {
+		got := f.notifications(t, user, notification.TypePaymentReceived)
+		if len(got) != 1 || got[0].Data["amount"] != float64(100_001) || got[0].Data["orderCode"] != o.Code {
+			t.Errorf("payment.received for %s after paying twice = %+v, want one", user, got)
+		}
+	}
 	if _, err := f.svc.Checkout(ctx, f.buyer, o.ID); !errors.Is(err, ErrOrderNotPayable) {
 		t.Errorf("Checkout(paid) error = %v, want ErrOrderNotPayable", err)
 	}
@@ -145,6 +171,13 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 	after, _ := f.svc.JastiperBalance(ctx, f.jastiper)
 	if released.Status != order.StatusReleased || after-before != 95_001 || f.escrow(t, o.ID) != 0 {
 		t.Errorf("status %s, jastiper +%d, escrow %d; want released, +95001, 0", released.Status, after-before, f.escrow(t, o.ID))
+	}
+	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+		t.Errorf("Release(again) error = %v, want ErrInvalidTransition", err)
+	}
+	got := f.notifications(t, f.jastiper, notification.TypeOrderReleased)
+	if len(got) != 1 || got[0].Data["amount"] != float64(95_001) {
+		t.Errorf("order.released = %+v, want one with the jastiper share", got)
 	}
 }
 
@@ -184,5 +217,28 @@ func TestLedgerIntegrity(t *testing.T) {
 	}
 	if _, err := f.pool.Exec(ctx, `DELETE FROM ledger_transactions`); err == nil {
 		t.Error("DELETE on ledger_transactions succeeded, want append-only error")
+	}
+}
+
+func TestExpiredOrderNotifiesBothParties(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.approvedOrder(t, 1, 10_000, 0)
+	if _, err := f.pool.Exec(ctx, `UPDATE orders SET payment_deadline = now() - interval '1 minute' WHERE id = $1`, o.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _, err := f.orders.Get(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID)
+	if err != nil || got.Status != order.StatusCancelled {
+		t.Fatalf("Get() = %s, %v; want cancelled", got.Status, err)
+	}
+	if _, _, err := f.orders.Get(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []uuid.UUID{f.buyer, f.jastiper} {
+		n := f.notifications(t, user, notification.TypeOrderCancelled)
+		if len(n) != 1 || n[0].Data["orderCode"] != o.Code || n[0].Data["reason"] != "Payment deadline passed." {
+			t.Errorf("order.cancelled for %s = %+v, want one", user, n)
+		}
 	}
 }

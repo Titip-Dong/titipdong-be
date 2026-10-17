@@ -48,13 +48,17 @@ FROM order_events
 WHERE order_id = $1
 ORDER BY id;
 
--- name: ExpireUnpaidOrders :exec
+-- name: ExpireUnpaidOrders :many
 WITH expired AS (
     UPDATE orders
     SET status = 'cancelled', status_reason = 'Payment deadline passed.', updated_at = now()
     WHERE status = 'approved' AND payment_deadline <= sqlc.arg(now)::timestamptz
-    RETURNING id
+    RETURNING id, code, buyer_id, jastiper_id, status_reason
+), events AS (
+    INSERT INTO order_events (order_id, from_status, to_status, actor_type, reason)
+    SELECT id, 'approved', 'cancelled', 'system', status_reason
+    FROM expired
 )
-INSERT INTO order_events (order_id, from_status, to_status, actor_type, reason)
-SELECT id, 'approved', 'cancelled', 'system', 'Payment deadline passed.'
-FROM expired;
+SELECT id, code, buyer_id, jastiper_id, status_reason
+FROM expired
+ORDER BY id;

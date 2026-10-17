@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
 	"github.com/google/uuid"
@@ -55,19 +56,20 @@ type Service interface {
 	ConfirmReceipt(ctx context.Context, buyerID, orderID uuid.UUID) (Shipment, error)
 }
 
-func NewService(pool *pgxpool.Pool, orders order.Service, payments payment.Service) Service {
-	return newService(newRepository(pool), orders, payments, time.Now)
+func NewService(pool *pgxpool.Pool, orders order.Service, payments payment.Service, notifier notification.Service) Service {
+	return newService(newRepository(pool), orders, payments, notifier, time.Now)
 }
 
 type service struct {
 	repo     repository
 	orders   order.Service
 	payments payment.Service
+	notifier notification.Service
 	now      func() time.Time
 }
 
-func newService(repo repository, orders order.Service, payments payment.Service, now func() time.Time) *service {
-	return &service{repo: repo, orders: orders, payments: payments, now: now}
+func newService(repo repository, orders order.Service, payments payment.Service, notifier notification.Service, now func() time.Time) *service {
+	return &service{repo: repo, orders: orders, payments: payments, notifier: notifier, now: now}
 }
 
 func (s *service) Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p ShipParams) (Shipment, error) {
@@ -96,7 +98,16 @@ func (s *service) Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p Shi
 			return err
 		}
 		sh.OrderStatus = o.Status
-		return s.repo.Create(ctx, sh)
+		if err := s.repo.Create(ctx, sh); err != nil {
+			return err
+		}
+		return s.notifier.Notify(ctx, notification.Event{
+			Type:       notification.TypeOrderShipped,
+			Recipients: []uuid.UUID{o.BuyerID},
+			Data: map[string]any{
+				"orderId": o.ID, "orderCode": o.Code, "method": sh.Method, "trackingNumber": sh.TrackingNumber,
+			},
+		})
 	})
 	return sh, err
 }

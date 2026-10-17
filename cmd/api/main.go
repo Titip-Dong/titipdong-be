@@ -12,6 +12,7 @@ import (
 
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/blob"
@@ -133,13 +134,15 @@ func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config, store *
 	api.UseMiddleware(auth.Middleware(api, authService))
 	auth.NewHandler(authService, cfg.CookieSecure).RegisterRoutes(api)
 	upload.NewHandler(uploadService).RegisterRoutes(api)
+	notificationService := notification.NewService(pool)
+	notification.NewHandler(notificationService).RegisterRoutes(api)
 	tripService := trip.NewService(pool)
 	trip.NewHandler(tripService).RegisterRoutes(api)
-	orderService := order.NewService(pool, tripService)
+	orderService := order.NewService(pool, tripService, notificationService)
 	order.NewHandler(orderService).RegisterRoutes(api)
-	paymentService := payment.NewService(pool, orderService, payment.FakeGateway{})
+	paymentService := payment.NewService(pool, orderService, notificationService, payment.FakeGateway{})
 	payment.NewHandler(paymentService, cfg.PaymentGateway == "fake").RegisterRoutes(api)
-	shipment.NewHandler(shipment.NewService(pool, orderService, paymentService)).RegisterRoutes(api)
+	shipment.NewHandler(shipment.NewService(pool, orderService, paymentService, notificationService)).RegisterRoutes(api)
 
 	return []jobs.Job{
 		{Name: "uploads.purge_pending", Every: time.Hour, Run: uploadService.PurgePending},

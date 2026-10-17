@@ -44,21 +44,54 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) error 
 	return err
 }
 
-const expireUnpaidOrders = `-- name: ExpireUnpaidOrders :exec
+const expireUnpaidOrders = `-- name: ExpireUnpaidOrders :many
 WITH expired AS (
     UPDATE orders
     SET status = 'cancelled', status_reason = 'Payment deadline passed.', updated_at = now()
     WHERE status = 'approved' AND payment_deadline <= $1::timestamptz
-    RETURNING id
+    RETURNING id, code, buyer_id, jastiper_id, status_reason
+), events AS (
+    INSERT INTO order_events (order_id, from_status, to_status, actor_type, reason)
+    SELECT id, 'approved', 'cancelled', 'system', status_reason
+    FROM expired
 )
-INSERT INTO order_events (order_id, from_status, to_status, actor_type, reason)
-SELECT id, 'approved', 'cancelled', 'system', 'Payment deadline passed.'
+SELECT id, code, buyer_id, jastiper_id, status_reason
 FROM expired
+ORDER BY id
 `
 
-func (q *Queries) ExpireUnpaidOrders(ctx context.Context, now time.Time) error {
-	_, err := q.db.Exec(ctx, expireUnpaidOrders, now)
-	return err
+type ExpireUnpaidOrdersRow struct {
+	ID           uuid.UUID
+	Code         string
+	BuyerID      uuid.UUID
+	JastiperID   uuid.UUID
+	StatusReason string
+}
+
+func (q *Queries) ExpireUnpaidOrders(ctx context.Context, now time.Time) ([]ExpireUnpaidOrdersRow, error) {
+	rows, err := q.db.Query(ctx, expireUnpaidOrders, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ExpireUnpaidOrdersRow
+	for rows.Next() {
+		var i ExpireUnpaidOrdersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.BuyerID,
+			&i.JastiperID,
+			&i.StatusReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getOrder = `-- name: GetOrder :one
