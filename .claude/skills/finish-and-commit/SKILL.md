@@ -45,6 +45,7 @@ TEST_DATABASE_URL="$DATABASE_URL" go test ./... -count=1
   Only after an explicit yes in this conversation:
 
   ```sh
+  git push origin feat/<branch>    # remote feature branch first, so it matches what is merged
   git switch dev && git pull --ff-only
   git merge --no-ff feat/<branch> -m "Merge branch 'feat/<branch>' into dev"
   make check                      # dev must stay green
@@ -56,7 +57,7 @@ TEST_DATABASE_URL="$DATABASE_URL" go test ./... -count=1
 - **`dev` → `main` only when the user asks for a release.** Same steps with `dev` merged into `main`
   (`Merge branch 'dev'`). Pushing `main` triggers `.github/workflows/deploy-aks.yml` (build and rollout to AKS), so
   say that when asking.
-- Feature branches are not pushed on their own unless the user asks.
+- Feature branches are pushed to the remote as part of the merge flow above and never deleted there.
 
 ### Message
 - Message: Conventional Commits with a module scope, imperative, lowercase, no trailing period:
