@@ -352,10 +352,10 @@ Done:
       set the cookie.
 - [x] `cmd/api seed-demo` for demo accounts.
 - [x] Migration adding `users.status`, `phone`, `updated_at`; login and refresh reject suspended users.
+- [x] `SetStatus(ctx, userID, status)` for F08: refuses admins (`ErrAdminStatus`), revokes refresh tokens on suspend.
 
 Remaining:
 
-- [ ] `SetStatus(ctx, userID, status)` for F08: refuses admins, revokes refresh tokens on suspend.
 - [ ] `PATCH /me` (name, phone, password change with the current password; a password change revokes all refresh
       tokens).
 - [ ] `api create-admin` CLI command.

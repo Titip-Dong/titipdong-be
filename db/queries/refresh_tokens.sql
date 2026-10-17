@@ -22,3 +22,8 @@ WHERE family_id = sqlc.arg(family_id) AND revoked_at IS NULL;
 SELECT EXISTS (
     SELECT 1 FROM refresh_tokens WHERE family_id = $1 AND revoked_at IS NULL
 );
+
+-- name: RevokeUserRefreshTokens :exec
+UPDATE refresh_tokens
+SET revoked_at = sqlc.arg(revoked_at)::timestamptz
+WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL;

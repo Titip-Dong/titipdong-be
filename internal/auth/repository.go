@@ -36,6 +36,7 @@ type repository interface {
 	// UserByEmail also returns the stored password hash.
 	UserByEmail(ctx context.Context, email string) (User, string, error)
 	UserByID(ctx context.Context, id uuid.UUID) (User, error)
+	SetUserStatus(ctx context.Context, id uuid.UUID, status Status) (User, error)
 
 	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
 	CreateRefreshToken(ctx context.Context, t refreshToken, hash []byte) error
@@ -44,6 +45,7 @@ type repository interface {
 	RotateRefreshToken(ctx context.Context, oldID, newID uuid.UUID, at time.Time) error
 	RevokeRefreshTokenFamily(ctx context.Context, familyID uuid.UUID, at time.Time) error
 	RefreshTokenFamilyActive(ctx context.Context, familyID uuid.UUID) (bool, error)
+	RevokeUserRefreshTokens(ctx context.Context, userID uuid.UUID, at time.Time) error
 }
 
 type pgRepository struct {
@@ -96,6 +98,14 @@ func (r *pgRepository) UserByID(ctx context.Context, id uuid.UUID) (User, error)
 	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), nil
 }
 
+func (r *pgRepository) SetUserStatus(ctx context.Context, id uuid.UUID, status Status) (User, error) {
+	row, err := r.q(ctx).SetUserStatus(ctx, db.SetUserStatusParams{ID: id, Status: string(status)})
+	if err != nil {
+		return User{}, notFound(err)
+	}
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), nil
+}
+
 func (r *pgRepository) CreateRefreshToken(ctx context.Context, t refreshToken, hash []byte) error {
 	return r.q(ctx).CreateRefreshToken(ctx, db.CreateRefreshTokenParams{
 		ID:        t.ID,
@@ -131,6 +141,10 @@ func (r *pgRepository) RevokeRefreshTokenFamily(ctx context.Context, familyID uu
 
 func (r *pgRepository) RefreshTokenFamilyActive(ctx context.Context, familyID uuid.UUID) (bool, error) {
 	return r.q(ctx).RefreshTokenFamilyActive(ctx, familyID)
+}
+
+func (r *pgRepository) RevokeUserRefreshTokens(ctx context.Context, userID uuid.UUID, at time.Time) error {
+	return r.q(ctx).RevokeUserRefreshTokens(ctx, db.RevokeUserRefreshTokensParams{UserID: userID, RevokedAt: at})
 }
 
 func toUser(id uuid.UUID, name, email, role, status string, phone *string, createdAt time.Time) User {

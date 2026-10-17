@@ -146,3 +146,40 @@ func (q *Queries) ListAdminIDs(ctx context.Context) ([]uuid.UUID, error) {
 	}
 	return items, nil
 }
+
+const setUserStatus = `-- name: SetUserStatus :one
+UPDATE users
+SET status = $1::text, updated_at = now()
+WHERE id = $2
+RETURNING id, name, email, role, status, phone, created_at
+`
+
+type SetUserStatusParams struct {
+	Status string
+	ID     uuid.UUID
+}
+
+type SetUserStatusRow struct {
+	ID        uuid.UUID
+	Name      string
+	Email     string
+	Role      string
+	Status    string
+	Phone     *string
+	CreatedAt time.Time
+}
+
+func (q *Queries) SetUserStatus(ctx context.Context, arg SetUserStatusParams) (SetUserStatusRow, error) {
+	row := q.db.QueryRow(ctx, setUserStatus, arg.Status, arg.ID)
+	var i SetUserStatusRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.Role,
+		&i.Status,
+		&i.Phone,
+		&i.CreatedAt,
+	)
+	return i, err
+}

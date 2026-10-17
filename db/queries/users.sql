@@ -17,3 +17,9 @@ WHERE id = $1;
 SELECT id FROM users
 WHERE role = 'admin'
 ORDER BY id;
+
+-- name: SetUserStatus :one
+UPDATE users
+SET status = sqlc.arg(status)::text, updated_at = now()
+WHERE id = sqlc.arg(id)
+RETURNING id, name, email, role, status, phone, created_at;

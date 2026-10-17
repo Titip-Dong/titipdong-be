@@ -63,6 +63,29 @@ func (r *fakeRepository) UserByID(_ context.Context, id uuid.UUID) (User, error)
 	return r.toUser(u), nil
 }
 
+func (r *fakeRepository) SetUserStatus(_ context.Context, id uuid.UUID, status Status) (User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.users[id]
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+	r.suspended[id] = status == StatusSuspended
+	return r.toUser(u), nil
+}
+
+func (r *fakeRepository) RevokeUserRefreshTokens(_ context.Context, userID uuid.UUID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for h, t := range r.tokens {
+		if t.UserID == userID && t.RevokedAt.IsZero() {
+			t.RevokedAt = at
+			r.tokens[h] = t
+		}
+	}
+	return nil
+}
+
 func (r *fakeRepository) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return fn(ctx)
 }
@@ -333,5 +356,50 @@ func TestSuspendedUserCannotLoginOrRefresh(t *testing.T) {
 	}
 	if active, _ := repo.RefreshTokenFamilyActive(ctx, repo.tokens[string(hashRefreshToken(sess.RefreshToken))].FamilyID); active {
 		t.Error("refresh family still active after a suspended refresh")
+	}
+}
+
+func TestSetStatus(t *testing.T) {
+	repo := newFakeRepository()
+	svc := newService(repo, newTokens([]byte(testSecret), accessTokenLifetime, func() time.Time { return repo.now }))
+	ctx := t.Context()
+	sess, err := svc.Register(ctx, RegisterParams{Name: "Sari", Email: "sari@example.com", Password: "rahasia123", Role: RoleJastiper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.Login(ctx, "sari@example.com", "rahasia123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := svc.SetStatus(ctx, sess.User.ID, StatusSuspended)
+	if err != nil || u.Status != StatusSuspended {
+		t.Fatalf("SetStatus(suspended) = %+v, %v", u, err)
+	}
+	for _, raw := range []string{sess.RefreshToken, second.RefreshToken} {
+		if _, err := svc.Refresh(ctx, raw); !errors.Is(err, ErrInvalidRefreshToken) {
+			t.Errorf("Refresh after suspension error = %v, want ErrInvalidRefreshToken", err)
+		}
+	}
+	if u, err := svc.SetStatus(ctx, sess.User.ID, StatusActive); err != nil || u.Status != StatusActive {
+		t.Fatalf("SetStatus(active) = %+v, %v", u, err)
+	}
+	if _, err := svc.Login(ctx, "sari@example.com", "rahasia123"); err != nil {
+		t.Errorf("Login after reactivation error = %v", err)
+	}
+
+	admin, err := svc.createUser(ctx, RegisterParams{Name: "Admin", Email: "admin@example.com", Password: "rahasia123", Role: RoleAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetStatus(ctx, admin.ID, StatusSuspended); !errors.Is(err, ErrAdminStatus) {
+		t.Errorf("SetStatus(admin) error = %v, want ErrAdminStatus", err)
+	}
+	if _, err := svc.SetStatus(ctx, uuid.New(), StatusSuspended); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("SetStatus(unknown) error = %v, want ErrUserNotFound", err)
+	}
+	var inputErr *InputError
+	if _, err := svc.SetStatus(ctx, sess.User.ID, "banned"); !errors.As(err, &inputErr) {
+		t.Errorf("SetStatus(banned) error = %v, want *InputError", err)
 	}
 }
