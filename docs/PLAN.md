@@ -231,6 +231,8 @@ newest one Azurite 3.37 accepts.
 | Runtime env in the Deployment        | Done  | `PAYMENT_GATEWAY=fake`; optional `AZURE_STORAGE_CONNECTION_STRING` (Secret) and `CORS_ORIGINS` (ConfigMap `titipdong-api-config`) |
 | Blob Storage account in Azure        | To do | Create the storage account and add its connection string to the Secret (`deploy/k8s/README.md`) |
 | Frontend origin                      | To do | Set `CORS_ORIGINS` in the ConfigMap once the FE domain exists                            |
+| Same-site domains for FE and API     | To do | The `SameSite=Lax` refresh cookie needs both under one parent domain (`deploy/k8s/README.md` §6) |
+| First admin                          | To do | `create-admin` in a pod after the first rollout (`deploy/k8s/README.md` §5)              |
 
 Migrations run at API startup under an advisory lock, which is safe with several replicas.
 
