@@ -150,6 +150,8 @@ func allowed(from, to Status, actor ActorType) bool {
 type Service interface {
 	Create(ctx context.Context, buyerID uuid.UUID, tripSlug string, p CreateParams) (Order, error)
 	List(ctx context.Context, userID uuid.UUID, p ListParams) (Page, error)
+	// ListForTrip is the jastiper's inbox for one trip; another jastiper's trip returns trip.ErrNotFound.
+	ListForTrip(ctx context.Context, jastiperID, tripID uuid.UUID, p ListParams) (Page, error)
 	// Get returns ErrNotFound unless the actor is the order's buyer or jastiper, or an admin.
 	Get(ctx context.Context, actor Actor, id uuid.UUID) (Order, []Event, error)
 	Approve(ctx context.Context, jastiperID, id uuid.UUID, itemPrice, jastipFee int64) (Order, error)
@@ -261,6 +263,18 @@ func (s *service) List(ctx context.Context, userID uuid.UUID, p ListParams) (Pag
 		return pagination.Cursor{At: o.CreatedAt, ID: o.ID}
 	})
 	return Page{Items: items, NextCursor: next}, nil
+}
+
+func (s *service) ListForTrip(ctx context.Context, jastiperID, tripID uuid.UUID, p ListParams) (Page, error) {
+	t, err := s.trips.ByID(ctx, tripID)
+	if err != nil {
+		return Page{}, err
+	}
+	if t.JastiperID != jastiperID {
+		return Page{}, trip.ErrNotFound
+	}
+	p.TripID = &tripID
+	return s.List(ctx, jastiperID, p)
 }
 
 func (s *service) Get(ctx context.Context, actor Actor, id uuid.UUID) (Order, []Event, error) {

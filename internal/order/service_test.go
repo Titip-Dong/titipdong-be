@@ -143,6 +143,14 @@ func (f fakeTrips) BySlug(_ context.Context, slug string) (trip.Trip, error) {
 	return t, nil
 }
 
+func (f fakeTrips) ByID(_ context.Context, id uuid.UUID) (trip.Trip, error) {
+	slug := f.byID(id)
+	if slug == "" {
+		return trip.Trip{}, trip.ErrNotFound
+	}
+	return f.trips[slug], nil
+}
+
 func (f fakeTrips) byID(id uuid.UUID) string {
 	for slug, t := range f.trips {
 		if t.ID == id {
@@ -536,5 +544,29 @@ func TestExpireUnpaidJob(t *testing.T) {
 	}
 	if got := reserved(svc, "tokyo"); got != 6 {
 		t.Errorf("reserved = %d, want 6 (paid and fresh orders keep theirs)", got)
+	}
+}
+
+func TestListForTrip(t *testing.T) {
+	svc := newTestService(newClock())
+	ctx := t.Context()
+	tokyo := svc.trips.(fakeTrips).trips["tokyo"]
+	first := createOrder(t, svc)
+	createOrder(t, svc)
+	_, _ = svc.Reject(ctx, jastiperID, first.ID, "Stok habis")
+
+	page, err := svc.ListForTrip(ctx, jastiperID, tokyo.ID, ListParams{Limit: 20})
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("ListForTrip() = %d items, %v; want 2", len(page.Items), err)
+	}
+	page, _ = svc.ListForTrip(ctx, jastiperID, tokyo.ID, ListParams{Status: StatusRequested, Limit: 20})
+	if len(page.Items) != 1 || page.Items[0].Status != StatusRequested {
+		t.Errorf("ListForTrip(requested) = %+v", page.Items)
+	}
+	if _, err := svc.ListForTrip(ctx, uuid.New(), tokyo.ID, ListParams{Limit: 20}); !errors.Is(err, trip.ErrNotFound) {
+		t.Errorf("ListForTrip(other jastiper) error = %v, want trip.ErrNotFound", err)
+	}
+	if _, err := svc.ListForTrip(ctx, jastiperID, uuid.New(), ListParams{Limit: 20}); !errors.Is(err, trip.ErrNotFound) {
+		t.Errorf("ListForTrip(unknown trip) error = %v, want trip.ErrNotFound", err)
 	}
 }
