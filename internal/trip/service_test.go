@@ -292,11 +292,14 @@ func TestReserveAndRelease(t *testing.T) {
 	if err := svc.Release(ctx, tr.ID, 4); err != nil {
 		t.Fatalf("Release(4) error = %v", err)
 	}
-	if err := svc.Release(ctx, tr.ID, 2); err == nil {
-		t.Error("Release(more than reserved) succeeded")
-	}
 	if got, _ := svc.ByID(ctx, tr.ID); got.RemainingCapacity() != 4 {
 		t.Errorf("remaining after release = %d, want 4", got.RemainingCapacity())
+	}
+	if err := svc.Release(ctx, tr.ID, 2); err != nil {
+		t.Errorf("Release(more than reserved) error = %v, want nil", err)
+	}
+	if got, _ := svc.ByID(ctx, tr.ID); got.ReservedCapacity != 0 {
+		t.Errorf("reserved after over-release = %d, want 0", got.ReservedCapacity)
 	}
 
 	if _, err := svc.Close(ctx, jastiperID, tr.ID); err != nil {

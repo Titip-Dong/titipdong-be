@@ -74,9 +74,6 @@ func TestConcurrentReserveNeverOverbooks(t *testing.T) {
 	if err := svc.Release(ctx, tr.ID, 2); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Release(ctx, tr.ID, 4); err == nil {
-		t.Error("Release(more than reserved) succeeded")
-	}
 	if _, err := pool.Exec(ctx, `UPDATE trips SET reserved_capacity = capacity + 1 WHERE id = $1`, tr.ID); err == nil {
 		t.Error("overbooking UPDATE succeeded, want CHECK violation")
 	}

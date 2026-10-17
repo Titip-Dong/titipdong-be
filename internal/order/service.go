@@ -180,9 +180,6 @@ func (s *service) Create(ctx context.Context, buyerID uuid.UUID, tripSlug string
 	if err != nil {
 		return Order{}, err
 	}
-	if !t.AcceptsRequests(s.now()) {
-		return Order{}, ErrTripClosed
-	}
 	if t.JastiperID == buyerID {
 		return Order{}, &InputError{Detail: "You cannot order from your own trip."}
 	}
@@ -204,6 +201,12 @@ func (s *service) Create(ctx context.Context, buyerID uuid.UUID, tripSlug string
 	for range 3 {
 		o.Code = newCode()
 		err = s.repo.WithTx(ctx, func(ctx context.Context) error {
+			if err := s.trips.Reserve(ctx, t.ID, o.Quantity); err != nil {
+				if errors.Is(err, trip.ErrTripClosed) {
+					return ErrTripClosed
+				}
+				return err
+			}
 			if err := s.repo.CreateOrder(ctx, o); err != nil {
 				return err
 			}
@@ -361,6 +364,11 @@ func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to 
 		if err := s.repo.UpdateStatus(ctx, o); err != nil {
 			return err
 		}
+		if releasesCapacity(to) {
+			if err := s.trips.Release(ctx, o.TripID, o.Quantity); err != nil {
+				return err
+			}
+		}
 		e := Event{FromStatus: &from, ToStatus: to, ActorType: actor.Type, Reason: reason}
 		if actor.Type != ActorSystem {
 			e.ActorID = &actor.ID
@@ -385,12 +393,20 @@ func (s *service) expireUnpaid(ctx context.Context) error {
 			return err
 		}
 		for _, o := range expired {
+			if err := s.trips.Release(ctx, o.TripID, o.Quantity); err != nil {
+				return err
+			}
 			if err := s.notifier.Notify(ctx, cancelledEvent(o, []uuid.UUID{o.BuyerID, o.JastiperID})); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+// releasesCapacity reports whether an order leaves the trip without being carried.
+func releasesCapacity(to Status) bool {
+	return to == StatusRejected || to == StatusCancelled || to == StatusRefunded
 }
 
 func cancelledEvent(o Order, recipients []uuid.UUID) notification.Event {

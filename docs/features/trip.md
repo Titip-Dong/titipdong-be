@@ -155,7 +155,7 @@ Lists use cursor pagination (`?limit=` default 20, max 100; `?cursor=`), respons
 | ---------------------------------------------- | ------ | -------------------------------------------------------- |
 | `BySlug(ctx, slug)`, `ByID(ctx, id)`           | Order  | Read jastiper ID, status, deadline                       |
 | `Reserve(ctx, tripID, units) error`            | Order  | Lock trip; `ErrTripClosed` unless accepting; `ErrCapacityFull` if not enough room; add units |
-| `Release(ctx, tripID, units) error`            | Order  | Lock trip, subtract units (reject, cancel, expiry, refund); error if more than reserved |
+| `Release(ctx, tripID, units) error`            | Order  | Lock trip, subtract units (reject, cancel, expiry, refund); never below 0, logs a warning if asked for more than reserved (orders from pre-capacity code) |
 
 ## Sequence diagrams
 

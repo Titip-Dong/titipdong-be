@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -98,7 +99,7 @@ type Service interface {
 	// Reserve takes units of capacity under a row lock: ErrTripClosed unless the trip accepts requests,
 	// ErrCapacityFull when fewer units remain.
 	Reserve(ctx context.Context, tripID uuid.UUID, units int) error
-	// Release gives units of capacity back.
+	// Release gives units of capacity back, never more than are reserved.
 	Release(ctx context.Context, tripID uuid.UUID, units int) error
 }
 
@@ -249,7 +250,12 @@ func (s *service) Release(ctx context.Context, tripID uuid.UUID, units int) erro
 			return err
 		}
 		if t.ReservedCapacity < units {
-			return fmt.Errorf("release %d units: only %d reserved on trip %s", units, t.ReservedCapacity, tripID)
+			// Orders created by code that predates capacity never reserved; do not block their transitions.
+			slog.WarnContext(ctx, "trip_release_exceeds_reserved", "trip_id", tripID, "units", units, "reserved", t.ReservedCapacity)
+			units = t.ReservedCapacity
+		}
+		if units == 0 {
+			return nil
 		}
 		return s.repo.AdjustReserved(ctx, tripID, -units)
 	})
