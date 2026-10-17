@@ -49,13 +49,13 @@ WITH expired AS (
     UPDATE orders
     SET status = 'cancelled', status_reason = 'Payment deadline passed.', updated_at = now()
     WHERE status = 'approved' AND payment_deadline <= $1::timestamptz
-    RETURNING id, code, buyer_id, jastiper_id, status_reason
+    RETURNING id, code, trip_id, buyer_id, jastiper_id, quantity, status_reason
 ), events AS (
     INSERT INTO order_events (order_id, from_status, to_status, actor_type, reason)
     SELECT id, 'approved', 'cancelled', 'system', status_reason
     FROM expired
 )
-SELECT id, code, buyer_id, jastiper_id, status_reason
+SELECT id, code, trip_id, buyer_id, jastiper_id, quantity, status_reason
 FROM expired
 ORDER BY id
 `
@@ -63,8 +63,10 @@ ORDER BY id
 type ExpireUnpaidOrdersRow struct {
 	ID           uuid.UUID
 	Code         string
+	TripID       uuid.UUID
 	BuyerID      uuid.UUID
 	JastiperID   uuid.UUID
+	Quantity     int32
 	StatusReason string
 }
 
@@ -80,8 +82,10 @@ func (q *Queries) ExpireUnpaidOrders(ctx context.Context, now time.Time) ([]Expi
 		if err := rows.Scan(
 			&i.ID,
 			&i.Code,
+			&i.TripID,
 			&i.BuyerID,
 			&i.JastiperID,
+			&i.Quantity,
 			&i.StatusReason,
 		); err != nil {
 			return nil, err

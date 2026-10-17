@@ -273,6 +273,8 @@ func mapError(err error) error {
 		return huma.Error404NotFound("Trip not found.")
 	case errors.Is(err, ErrTripClosed):
 		return huma.Error409Conflict("Trip no longer accepts requests.")
+	case errors.Is(err, trip.ErrCapacityFull):
+		return huma.Error409Conflict("Trip is full.")
 	case errors.Is(err, ErrInvalidTransition):
 		return huma.Error409Conflict("Order status does not allow this action.")
 	}

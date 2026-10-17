@@ -84,6 +84,7 @@ type createTripRequest struct {
 	DepartsOn          string    `json:"departsOn" format:"date"`
 	ReturnsOn          string    `json:"returnsOn" format:"date"`
 	RequestDeadline    time.Time `json:"requestDeadline"`
+	Capacity           int       `json:"capacity" minimum:"1" maximum:"1000" doc:"Items the jastiper can carry"`
 }
 
 type tripResponse struct {
@@ -96,6 +97,8 @@ type tripResponse struct {
 	DepartsOn          string    `json:"departsOn" format:"date"`
 	ReturnsOn          string    `json:"returnsOn" format:"date"`
 	RequestDeadline    time.Time `json:"requestDeadline"`
+	Capacity           int       `json:"capacity"`
+	RemainingCapacity  int       `json:"remainingCapacity"`
 	Status             string    `json:"status" enum:"open,closed,completed,cancelled"`
 	AcceptsRequests    bool      `json:"acceptsRequests"`
 	Jastiper           jastiper  `json:"jastiper"`
@@ -136,6 +139,7 @@ func (h *Handler) create(ctx context.Context, in *struct{ Body createTripRequest
 		DepartsOn:          departs,
 		ReturnsOn:          returns,
 		RequestDeadline:    in.Body.RequestDeadline,
+		Capacity:           in.Body.Capacity,
 	})
 	if err != nil {
 		return nil, mapError(err)
@@ -219,6 +223,8 @@ func toTripResponse(t Trip) tripResponse {
 		DepartsOn:          t.DepartsOn.Format(dateLayout),
 		ReturnsOn:          t.ReturnsOn.Format(dateLayout),
 		RequestDeadline:    t.RequestDeadline,
+		Capacity:           t.Capacity,
+		RemainingCapacity:  t.RemainingCapacity(),
 		Status:             string(t.Status),
 		AcceptsRequests:    t.AcceptsRequests(time.Now()),
 		Jastiper:           jastiper{ID: t.JastiperID, Name: t.JastiperName},

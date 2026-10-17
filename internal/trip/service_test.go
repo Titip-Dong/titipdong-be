@@ -24,6 +24,26 @@ func newFakeRepository(now func() time.Time) *fakeRepository {
 	return &fakeRepository{trips: map[uuid.UUID]Trip{}, now: now}
 }
 
+func (r *fakeRepository) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	return fn(ctx)
+}
+
+func (r *fakeRepository) Lock(ctx context.Context, id uuid.UUID) (Trip, error) {
+	return r.TripByID(ctx, id)
+}
+
+func (r *fakeRepository) AdjustReserved(_ context.Context, id uuid.UUID, units int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t := r.trips[id]
+	t.ReservedCapacity += units
+	if t.ReservedCapacity < 0 || t.ReservedCapacity > t.Capacity {
+		return errors.New("reserved_capacity check violated")
+	}
+	r.trips[id] = t
+	return nil
+}
+
 func (r *fakeRepository) CreateTrip(_ context.Context, t Trip) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -65,7 +85,7 @@ func (r *fakeRepository) ListOpen(_ context.Context, f openFilter) ([]Trip, erro
 	var out []Trip
 	for _, t := range r.trips {
 		after := t.DepartsOn.After(f.After.At) || (t.DepartsOn.Equal(f.After.At) && t.ID.String() > f.After.ID.String())
-		if t.Status == StatusOpen && t.RequestDeadline.After(f.Now) && after &&
+		if t.Status == StatusOpen && t.RequestDeadline.After(f.Now) && t.RemainingCapacity() > 0 && after &&
 			strings.HasPrefix(strings.ToLower(t.DestinationCity), strings.ToLower(f.City)) {
 			out = append(out, t)
 		}
@@ -119,6 +139,7 @@ func validParams() CreateParams {
 		DepartsOn:          time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC),
 		ReturnsOn:          time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC),
 		RequestDeadline:    time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC),
+		Capacity:           5,
 	}
 }
 
@@ -142,6 +163,7 @@ func TestCreateValidation(t *testing.T) {
 		"returns before departs": func(p *CreateParams) { p.ReturnsOn = p.DepartsOn.AddDate(0, 0, -1) },
 		"deadline in the past":   func(p *CreateParams) { p.RequestDeadline = testNow.Add(-time.Minute) },
 		"deadline after return":  func(p *CreateParams) { p.RequestDeadline = p.ReturnsOn.AddDate(0, 0, 1) },
+		"zero capacity":          func(p *CreateParams) { p.Capacity = 0 },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -238,5 +260,58 @@ func TestSlugify(t *testing.T) {
 		if got := slugify(in); got != want {
 			t.Errorf("slugify(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestReserveAndRelease(t *testing.T) {
+	svc := newTestService()
+	ctx := t.Context()
+	jastiperID := uuid.New()
+	tr, err := svc.Create(ctx, jastiperID, validParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.Reserve(ctx, tr.ID, 3); err != nil {
+		t.Fatalf("Reserve(3) error = %v", err)
+	}
+	if err := svc.Reserve(ctx, tr.ID, 3); !errors.Is(err, ErrCapacityFull) {
+		t.Errorf("Reserve(3 more of 5) error = %v, want ErrCapacityFull", err)
+	}
+	if err := svc.Reserve(ctx, tr.ID, 2); err != nil {
+		t.Fatalf("Reserve(last 2) error = %v", err)
+	}
+	got, _ := svc.ByID(ctx, tr.ID)
+	if got.RemainingCapacity() != 0 || got.AcceptsRequests(testNow) {
+		t.Errorf("full trip: remaining %d, accepts %v", got.RemainingCapacity(), got.AcceptsRequests(testNow))
+	}
+	if page, _ := svc.List(ctx, ListParams{Limit: 20}); len(page.Items) != 0 {
+		t.Errorf("full trip listed: %+v", page.Items)
+	}
+
+	if err := svc.Release(ctx, tr.ID, 4); err != nil {
+		t.Fatalf("Release(4) error = %v", err)
+	}
+	if got, _ := svc.ByID(ctx, tr.ID); got.RemainingCapacity() != 4 {
+		t.Errorf("remaining after release = %d, want 4", got.RemainingCapacity())
+	}
+	if err := svc.Release(ctx, tr.ID, 2); err != nil {
+		t.Errorf("Release(more than reserved) error = %v, want nil", err)
+	}
+	if got, _ := svc.ByID(ctx, tr.ID); got.ReservedCapacity != 0 {
+		t.Errorf("reserved after over-release = %d, want 0", got.ReservedCapacity)
+	}
+
+	if _, err := svc.Close(ctx, jastiperID, tr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Reserve(ctx, tr.ID, 1); !errors.Is(err, ErrTripClosed) {
+		t.Errorf("Reserve(closed) error = %v, want ErrTripClosed", err)
+	}
+	if err := svc.Release(ctx, tr.ID, 1); err != nil {
+		t.Errorf("Release(closed) error = %v, want nil", err)
+	}
+	if err := svc.Reserve(ctx, uuid.New(), 1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Reserve(unknown) error = %v, want ErrNotFound", err)
 	}
 }

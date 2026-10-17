@@ -76,6 +76,7 @@ func (f fixture) approvedOrder(t *testing.T, quantity int, itemPrice, fee int64)
 		DepartsOn:          time.Now().AddDate(0, 0, 1),
 		ReturnsOn:          time.Now().AddDate(0, 0, 10),
 		RequestDeadline:    time.Now().Add(72 * time.Hour),
+		Capacity:           10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +90,15 @@ func (f fixture) approvedOrder(t *testing.T, quantity int, itemPrice, fee int64)
 		t.Fatal(err)
 	}
 	return o
+}
+
+func (f fixture) remainingCapacity(t *testing.T, tripID uuid.UUID) int {
+	t.Helper()
+	tr, err := trip.NewService(f.pool).ByID(context.Background(), tripID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tr.RemainingCapacity()
 }
 
 func (f fixture) escrow(t *testing.T, orderID uuid.UUID) int64 {
@@ -179,6 +189,9 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 	if len(got) != 1 || got[0].Data["amount"] != float64(95_001) {
 		t.Errorf("order.released = %+v, want one with the jastiper share", got)
 	}
+	if left := f.remainingCapacity(t, o.TripID); left != 7 {
+		t.Errorf("remaining capacity after release = %d, want 7 (a carried order keeps its 3)", left)
+	}
 }
 
 func TestCheckoutAfterDeadline(t *testing.T) {
@@ -223,7 +236,10 @@ func TestLedgerIntegrity(t *testing.T) {
 func TestExpiredOrderNotifiesBothParties(t *testing.T) {
 	f := newFixture(t, time.Now)
 	ctx := context.Background()
-	o := f.approvedOrder(t, 1, 10_000, 0)
+	o := f.approvedOrder(t, 4, 10_000, 0)
+	if left := f.remainingCapacity(t, o.TripID); left != 6 {
+		t.Fatalf("remaining capacity after create = %d, want 6", left)
+	}
 	if _, err := f.pool.Exec(ctx, `UPDATE orders SET payment_deadline = now() - interval '1 minute' WHERE id = $1`, o.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -235,10 +251,32 @@ func TestExpiredOrderNotifiesBothParties(t *testing.T) {
 	if _, _, err := f.orders.Get(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID); err != nil {
 		t.Fatal(err)
 	}
+	if left := f.remainingCapacity(t, o.TripID); left != 10 {
+		t.Errorf("remaining capacity after expiry = %d, want 10", left)
+	}
 	for _, user := range []uuid.UUID{f.buyer, f.jastiper} {
 		n := f.notifications(t, user, notification.TypeOrderCancelled)
 		if len(n) != 1 || n[0].Data["orderCode"] != o.Code || n[0].Data["reason"] != "Payment deadline passed." {
 			t.Errorf("order.cancelled for %s = %+v, want one", user, n)
 		}
+	}
+}
+
+func TestOrderCannotOverbookTrip(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.approvedOrder(t, 10, 10_000, 0)
+	tr, err := trip.NewService(f.pool).ByID(ctx, o.TripID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.orders.Create(ctx, f.buyer, tr.Slug, order.CreateParams{ProductName: "One more", Quantity: 1}); !errors.Is(err, trip.ErrCapacityFull) {
+		t.Fatalf("Create(on a full trip) error = %v, want trip.ErrCapacityFull", err)
+	}
+	if _, err := f.orders.Cancel(ctx, f.buyer, o.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.orders.Create(ctx, f.buyer, tr.Slug, order.CreateParams{ProductName: "One more", Quantity: 10}); err != nil {
+		t.Errorf("Create(after cancel freed the trip) error = %v", err)
 	}
 }

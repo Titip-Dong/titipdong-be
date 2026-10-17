@@ -147,6 +147,41 @@ func (f fakeTrips) BySlug(_ context.Context, slug string) (trip.Trip, error) {
 	return t, nil
 }
 
+func (f fakeTrips) byID(id uuid.UUID) string {
+	for slug, t := range f.trips {
+		if t.ID == id {
+			return slug
+		}
+	}
+	return ""
+}
+
+func (f fakeTrips) Reserve(_ context.Context, tripID uuid.UUID, units int) error {
+	slug := f.byID(tripID)
+	t := f.trips[slug]
+	switch {
+	case t.Status != trip.StatusOpen:
+		return trip.ErrTripClosed
+	case t.RemainingCapacity() < units:
+		return trip.ErrCapacityFull
+	}
+	t.ReservedCapacity += units
+	f.trips[slug] = t
+	return nil
+}
+
+func (f fakeTrips) Release(_ context.Context, tripID uuid.UUID, units int) error {
+	slug := f.byID(tripID)
+	t := f.trips[slug]
+	t.ReservedCapacity = max(0, t.ReservedCapacity-units)
+	f.trips[slug] = t
+	return nil
+}
+
+func reserved(svc *service, slug string) int {
+	return svc.trips.(fakeTrips).trips[slug].ReservedCapacity
+}
+
 type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
@@ -159,8 +194,8 @@ var (
 func newTestService(c *clock) *service {
 	deadline := c.t.Add(7 * 24 * time.Hour)
 	trips := fakeTrips{trips: map[string]trip.Trip{
-		"tokyo":  {ID: uuid.New(), JastiperID: jastiperID, Slug: "tokyo", Status: trip.StatusOpen, RequestDeadline: deadline},
-		"closed": {ID: uuid.New(), JastiperID: jastiperID, Slug: "closed", Status: trip.StatusClosed, RequestDeadline: deadline},
+		"tokyo":  {ID: uuid.New(), JastiperID: jastiperID, Slug: "tokyo", Status: trip.StatusOpen, RequestDeadline: deadline, Capacity: 10},
+		"closed": {ID: uuid.New(), JastiperID: jastiperID, Slug: "closed", Status: trip.StatusClosed, RequestDeadline: deadline, Capacity: 10},
 	}}
 	return newService(newFakeRepository(c.now), trips, &fakeNotifier{}, c.now)
 }
@@ -376,5 +411,54 @@ func TestTransitionsNotifyTheOtherParty(t *testing.T) {
 	e = n.last(t, notification.TypeOrderCancelled)
 	if !slices.Equal(e.Recipients, []uuid.UUID{buyerID, jastiperID}) || e.Data["orderId"] != o.ID || e.Data["reason"] != "Payment deadline passed." {
 		t.Errorf("order.cancelled on expiry = %+v", e)
+	}
+}
+
+func TestCapacityIsReservedAndReleased(t *testing.T) {
+	c := newClock()
+	svc := newTestService(c)
+	ctx := t.Context()
+
+	o := createOrder(t, svc) // 3 of 10
+	if got := reserved(svc, "tokyo"); got != 3 {
+		t.Fatalf("reserved after create = %d, want 3", got)
+	}
+	if _, err := svc.Create(ctx, buyerID, "tokyo", CreateParams{ProductName: "Big", Quantity: 8}); !errors.Is(err, trip.ErrCapacityFull) {
+		t.Errorf("Create(8 of 7 left) error = %v, want trip.ErrCapacityFull", err)
+	}
+	if got := reserved(svc, "tokyo"); got != 3 {
+		t.Errorf("reserved after a refused create = %d, want 3", got)
+	}
+
+	if _, err := svc.Reject(ctx, jastiperID, o.ID, "Stok habis"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reserved(svc, "tokyo"); got != 0 {
+		t.Errorf("reserved after reject = %d, want 0", got)
+	}
+
+	cancelled := createOrder(t, svc)
+	_, _ = svc.Cancel(ctx, buyerID, cancelled.ID, "")
+	expired := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, expired.ID, 10_000, 0)
+	kept := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, kept.ID, 10_000, 0)
+	_, _ = svc.MarkPaid(ctx, kept.ID)
+	if got := reserved(svc, "tokyo"); got != 6 {
+		t.Fatalf("reserved with one approved and one paid order = %d, want 6", got)
+	}
+
+	c.t = c.t.Add(paymentWindow)
+	if _, err := svc.List(ctx, buyerID, ListParams{Limit: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reserved(svc, "tokyo"); got != 3 {
+		t.Errorf("reserved after expiry = %d, want 3 (the paid order)", got)
+	}
+	if _, err := svc.MarkRefunded(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, kept.ID, "Tidak jadi berangkat"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reserved(svc, "tokyo"); got != 0 {
+		t.Errorf("reserved after refund = %d, want 0", got)
 	}
 }

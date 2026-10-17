@@ -156,8 +156,8 @@ func (r *pgRepository) ExpireUnpaid(ctx context.Context, now time.Time) ([]Order
 	orders := make([]Order, len(rows))
 	for i, row := range rows {
 		orders[i] = Order{
-			ID: row.ID, Code: row.Code, BuyerID: row.BuyerID, JastiperID: row.JastiperID,
-			Status: StatusCancelled, StatusReason: row.StatusReason,
+			ID: row.ID, Code: row.Code, TripID: row.TripID, BuyerID: row.BuyerID, JastiperID: row.JastiperID,
+			Quantity: int(row.Quantity), Status: StatusCancelled, StatusReason: row.StatusReason,
 		}
 	}
 	return orders, nil

@@ -68,6 +68,7 @@ func TestShipAndConfirmReceipt(t *testing.T) {
 	tr, err := trips.Create(ctx, jastiper, trip.CreateParams{
 		Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",
 		DepartsOn: time.Now().AddDate(0, 0, 1), ReturnsOn: time.Now().AddDate(0, 0, 10), RequestDeadline: time.Now().Add(72 * time.Hour),
+		Capacity: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
