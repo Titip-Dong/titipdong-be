@@ -105,8 +105,8 @@ trips ||--o{ orders : "reserves capacity"
 | `departs_on`          | `DATE`        |                                                      |
 | `returns_on`          | `DATE`        | `>= departs_on`                                      |
 | `request_deadline`    | `TIMESTAMPTZ` |                                                      |
-| `capacity`            | `INTEGER`     | Items, `> 0` (to add)                                |
-| `reserved_capacity`   | `INTEGER`     | Default 0, `BETWEEN 0 AND capacity` (to add)         |
+| `capacity`            | `INTEGER`     | Items, `> 0`, default 20 for pre-capacity rows       |
+| `reserved_capacity`   | `INTEGER`     | Default 0, `BETWEEN 0 AND capacity`                  |
 | `status`              | `TEXT`        | `open`, `closed`, `completed`, `cancelled`           |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` |                                                 |
 
@@ -250,10 +250,10 @@ Done:
 - [x] `trips` table, create, list (city filter + cursor), get, close, my trips.
 - [x] Slug generation, `ByID` / `BySlug`, `Trip.AcceptsRequests(now)`.
 - [x] Service and handler tests.
+- [x] Migration adding `capacity` / `reserved_capacity`, backfilling `reserved_capacity` from existing active orders.
 
 Remaining:
 
-- [ ] Migration adding `capacity` / `reserved_capacity`, backfilling `reserved_capacity` from existing active orders.
 - [ ] `capacity` in create and responses, `remainingCapacity`; `Reserve` / `Release` under a row lock; integration
       test for concurrent `Reserve`.
 - [ ] `from` / `to` filters on `listTrips`.

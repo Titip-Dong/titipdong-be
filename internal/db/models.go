@@ -141,6 +141,8 @@ type Trip struct {
 	Status             string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	Capacity           int32
+	ReservedCapacity   int32
 }
 
 type Upload struct {

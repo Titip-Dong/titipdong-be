@@ -368,7 +368,7 @@ Presenting a token that is already revoked means it was stolen or replayed, so t
 
 ## 4. F02 Trip & Catalog
 
-### `trips` (exists, to extend: `capacity`, `reserved_capacity`)
+### `trips` (exists)
 
 ```sql
 CREATE TABLE trips (
@@ -382,7 +382,7 @@ CREATE TABLE trips (
     departs_on          DATE NOT NULL,
     returns_on          DATE NOT NULL,
     request_deadline    TIMESTAMPTZ NOT NULL,          -- last moment buyers can request
-    capacity            INTEGER NOT NULL CHECK (capacity > 0),
+    capacity            INTEGER NOT NULL DEFAULT 20 CHECK (capacity > 0),  -- default only for pre-capacity code
     reserved_capacity   INTEGER NOT NULL DEFAULT 0,
     status              TEXT NOT NULL DEFAULT 'open'
                         CHECK (status IN ('open', 'closed', 'completed', 'cancelled')),
@@ -396,7 +396,8 @@ CREATE INDEX trips_jastiper_idx ON trips (jastiper_id, created_at DESC, id DESC)
 ```
 
 - Capacity is counted in items: an order reserves its `quantity`. The migration that adds the columns backfills
-  `reserved_capacity` from existing active orders.
+  `reserved_capacity` from orders not `rejected`, `cancelled`, or `refunded`, and raises `capacity` to at least that.
+  The `DEFAULT 20` keeps inserts from the previous release working during the rolling update.
 - `reserved_capacity` is changed only by `trip.Service.Reserve/Release`, called by Order under a row lock on the
   trip. The `CHECK` makes overbooking impossible even if application code is wrong.
 - `open`: accepting requests. `closed`: past the deadline or closed by the jastiper. `completed`: the return date has
