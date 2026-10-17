@@ -595,7 +595,7 @@ Postings (amounts for an order with `total` = Rp 1.000.000):
 
 The platform fee is `floor(total × 5 / 100)`; the remainder goes to the jastiper, so no rupiah is lost to rounding.
 
-### `payout_accounts` and `payouts` (to add)
+### `payout_accounts` and `payouts` (exist)
 
 A jastiper saves one bank account and requests payouts against their available balance (`jastiper_payable` minus
 payouts still `requested`). An admin transfers the money outside the system and marks the payout `paid`, which posts
@@ -620,8 +620,8 @@ CREATE TABLE payouts (
     account_number   TEXT NOT NULL,
     account_name     TEXT NOT NULL,
     status           TEXT NOT NULL DEFAULT 'requested' CHECK (status IN ('requested', 'paid', 'rejected')),
-    reference        TEXT,                              -- bank transfer reference, set when paid
-    rejection_reason TEXT,
+    reference        TEXT CHECK (char_length(reference) <= 100),  -- bank transfer reference, set when paid
+    rejection_reason TEXT CHECK (char_length(rejection_reason) <= 500),
     decided_by       UUID REFERENCES users (id),
     requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     decided_at       TIMESTAMPTZ,

@@ -103,6 +103,30 @@ type Payment struct {
 	UpdatedAt             time.Time
 }
 
+type Payout struct {
+	ID              uuid.UUID
+	JastiperID      uuid.UUID
+	Amount          int64
+	BankName        string
+	AccountNumber   string
+	AccountName     string
+	Status          string
+	Reference       *string
+	RejectionReason *string
+	DecidedBy       *uuid.UUID
+	RequestedAt     time.Time
+	DecidedAt       *time.Time
+}
+
+type PayoutAccount struct {
+	UserID        uuid.UUID
+	BankName      string
+	AccountNumber string
+	AccountName   string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
 type RefreshToken struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID

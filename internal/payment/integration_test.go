@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -442,5 +443,161 @@ func TestRefundGatewayFailureKeepsDebtToBuyer(t *testing.T) {
 	got, _, _ := f.orders.Get(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID)
 	if got.Status != order.StatusRefunded {
 		t.Errorf("order status = %s, want refunded", got.Status)
+	}
+}
+
+// releasedOrder pays and releases an order, crediting the jastiper total − 5%.
+func (f fixture) releasedOrder(t *testing.T, itemPrice int64) order.Order {
+	t.Helper()
+	ctx := context.Background()
+	o := f.paidOrder(t, 1, itemPrice, 0)
+	if _, err := f.orders.MarkShipped(ctx, f.jastiper, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.orders.MarkDelivered(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.Release(ctx, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+func (f fixture) payoutAuditCount(t *testing.T, action string, payoutID uuid.UUID) int {
+	t.Helper()
+	var n int
+	err := f.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM audit_logs WHERE action = $1 AND target_type = 'payout' AND target_id = $2`, action, payoutID.String()).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestPayoutFlow(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	admin := f.admin(t)
+	f.releasedOrder(t, 100_000) // jastiper earns 95.000
+
+	if _, err := f.svc.RequestPayout(ctx, f.jastiper, 10_000); !errors.Is(err, ErrNoPayoutAccount) {
+		t.Fatalf("RequestPayout(no account) error = %v, want ErrNoPayoutAccount", err)
+	}
+	acc := PayoutAccount{UserID: f.jastiper, BankName: "BCA", AccountNumber: "1234567890", AccountName: "Jastiper"}
+	if _, err := f.svc.SavePayoutAccount(ctx, acc); err != nil {
+		t.Fatal(err)
+	}
+	acc.BankName = "Mandiri"
+	if saved, err := f.svc.SavePayoutAccount(ctx, acc); err != nil || saved.BankName != "Mandiri" {
+		t.Fatalf("SavePayoutAccount(update) = %+v, %v", saved, err)
+	}
+
+	if _, err := f.svc.RequestPayout(ctx, f.jastiper, 95_001); !errors.Is(err, ErrInsufficientFunds) {
+		t.Errorf("RequestPayout(more than earned) error = %v, want ErrInsufficientFunds", err)
+	}
+	first, err := f.svc.RequestPayout(ctx, f.jastiper, 50_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != PayoutRequested || first.BankName != "Mandiri" || first.JastiperName == "" {
+		t.Errorf("payout = %+v", first)
+	}
+	if _, err := f.svc.RequestPayout(ctx, f.jastiper, 1_000); !errors.Is(err, ErrPayoutOpen) {
+		t.Errorf("RequestPayout(second open) error = %v, want ErrPayoutOpen", err)
+	}
+
+	rejected, err := f.svc.RejectPayout(ctx, admin, first.ID, "Nama rekening tidak cocok")
+	if err != nil || rejected.Status != PayoutRejected || rejected.DecidedAt == nil {
+		t.Fatalf("RejectPayout() = %+v, %v", rejected, err)
+	}
+	if balance, _ := f.svc.JastiperBalance(ctx, f.jastiper); balance != 95_000 {
+		t.Errorf("balance after reject = %d, want 95000", balance)
+	}
+	if _, err := f.svc.MarkPayoutPaid(ctx, admin, first.ID, "TRF-1"); !errors.Is(err, ErrPayoutNotRequested) {
+		t.Errorf("MarkPayoutPaid(rejected) error = %v, want ErrPayoutNotRequested", err)
+	}
+
+	second, err := f.svc.RequestPayout(ctx, f.jastiper, 95_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paid, err := f.svc.MarkPayoutPaid(ctx, admin, second.ID, "TRF-20261017-001")
+	if err != nil || paid.Status != PayoutPaid || paid.Reference != "TRF-20261017-001" {
+		t.Fatalf("MarkPayoutPaid() = %+v, %v", paid, err)
+	}
+	if _, err := f.svc.MarkPayoutPaid(ctx, admin, second.ID, "TRF-again"); !errors.Is(err, ErrPayoutNotRequested) {
+		t.Errorf("MarkPayoutPaid(again) error = %v, want ErrPayoutNotRequested", err)
+	}
+	if balance, _ := f.svc.JastiperBalance(ctx, f.jastiper); balance != 0 {
+		t.Errorf("balance after payout = %d, want 0", balance)
+	}
+	if _, err := f.svc.RequestPayout(ctx, f.jastiper, 1); !errors.Is(err, ErrInsufficientFunds) {
+		t.Errorf("RequestPayout(after paying out everything) error = %v, want ErrInsufficientFunds", err)
+	}
+
+	if n := f.notifications(t, f.jastiper, notification.TypePayoutRejected); len(n) != 1 || n[0].Data["reason"] != "Nama rekening tidak cocok" {
+		t.Errorf("payout.rejected = %+v", n)
+	}
+	if n := f.notifications(t, f.jastiper, notification.TypePayoutPaid); len(n) != 1 || n[0].Data["amount"] != float64(95_000) {
+		t.Errorf("payout.paid = %+v", n)
+	}
+	if f.payoutAuditCount(t, "payout.rejected", first.ID) != 1 || f.payoutAuditCount(t, "payout.paid", second.ID) != 1 {
+		t.Error("missing payout audit rows")
+	}
+
+	mine, err := f.svc.ListMyPayouts(ctx, f.jastiper, 1, "")
+	if err != nil || len(mine.Items) != 1 || mine.Items[0].ID != second.ID || mine.NextCursor == "" {
+		t.Fatalf("ListMyPayouts(first page) = %+v, %v", mine, err)
+	}
+	if next, _ := f.svc.ListMyPayouts(ctx, f.jastiper, 1, mine.NextCursor); len(next.Items) != 1 || next.Items[0].ID != first.ID {
+		t.Errorf("ListMyPayouts(second page) = %+v", next)
+	}
+	queue, err := f.svc.ListPayouts(ctx, PayoutRejected, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range queue.Items {
+		found = found || p.ID == first.ID
+		if p.Status != PayoutRejected {
+			t.Errorf("ListPayouts(rejected) returned %s", p.Status)
+		}
+	}
+	if !found {
+		t.Error("ListPayouts(rejected) misses the rejected payout")
+	}
+}
+
+func TestConcurrentPayoutRequests(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	f.releasedOrder(t, 100_000)
+	if _, err := f.svc.SavePayoutAccount(ctx, PayoutAccount{UserID: f.jastiper, BankName: "BCA", AccountNumber: "1234567890", AccountName: "J"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const attempts = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, attempts)
+	for range attempts {
+		wg.Go(func() {
+			_, err := f.svc.RequestPayout(ctx, f.jastiper, 60_000)
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(errs)
+	var ok int
+	for err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrPayoutOpen), errors.Is(err, ErrInsufficientFunds):
+		default:
+			t.Errorf("RequestPayout() error = %v", err)
+		}
+	}
+	if ok != 1 {
+		t.Errorf("successful concurrent requests = %d, want 1", ok)
 	}
 }

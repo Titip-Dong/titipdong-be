@@ -189,9 +189,8 @@ Done:
 - [x] Service and handler tests; integration test that a rolled-back transaction leaves no notification.
 - [x] `Notify` wired into Order (`order.requested`, `order.approved`, `order.rejected`, `order.cancelled` including
       the payment-deadline expiry), Payment (`payment.received`, `order.released`), and Shipment (`order.shipped`).
-- [x] `order.refunded` from Payment refunds.
+- [x] `order.refunded` from Payment refunds; `payout.paid`, `payout.rejected` from Payment payouts.
 
 Remaining:
 
-- [ ] `payout.paid`, `payout.rejected`: with F04 payouts.
 - [ ] `dispute.opened`, `dispute.message`, `dispute.resolved`: with F06.

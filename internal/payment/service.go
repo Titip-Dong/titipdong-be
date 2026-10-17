@@ -12,6 +12,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/audit"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -33,6 +34,14 @@ const (
 	RefundDispute           RefundReason = "dispute_refund"
 )
 
+type PayoutStatus string
+
+const (
+	PayoutRequested PayoutStatus = "requested"
+	PayoutPaid      PayoutStatus = "paid"
+	PayoutRejected  PayoutStatus = "rejected"
+)
+
 type RefundStatus string
 
 const (
@@ -47,6 +56,12 @@ var (
 	ErrDeadlinePassed   = errors.New("payment deadline passed")
 	ErrNotPending       = errors.New("payment is not pending")
 	ErrSimulateDisabled = errors.New("payment simulation is disabled")
+
+	ErrNoPayoutAccount    = errors.New("no payout account saved")
+	ErrPayoutOpen         = errors.New("a payout request is already open")
+	ErrInsufficientFunds  = errors.New("amount exceeds the available balance")
+	ErrPayoutNotFound     = errors.New("payout not found")
+	ErrPayoutNotRequested = errors.New("payout is no longer requested")
 )
 
 type InputError struct {
@@ -68,6 +83,35 @@ type Payment struct {
 	CheckoutURL   string
 	ExpiresAt     time.Time
 	PaidAt        *time.Time
+}
+
+type PayoutAccount struct {
+	UserID        uuid.UUID
+	BankName      string
+	AccountNumber string
+	AccountName   string
+	UpdatedAt     time.Time
+}
+
+type Payout struct {
+	ID              uuid.UUID
+	JastiperID      uuid.UUID
+	JastiperName    string
+	Amount          int64
+	BankName        string
+	AccountNumber   string
+	AccountName     string
+	Status          PayoutStatus
+	Reference       string
+	RejectionReason string
+	DecidedBy       *uuid.UUID
+	RequestedAt     time.Time
+	DecidedAt       *time.Time
+}
+
+type PayoutPage struct {
+	Items      []Payout
+	NextCursor string
 }
 
 type Refund struct {
@@ -97,6 +141,15 @@ type Service interface {
 	Refund(ctx context.Context, actor order.Actor, orderID uuid.UUID, reason RefundReason, note string) (Refund, error)
 	// CancelPaid is the jastiper cancelling a paid order, which refunds the buyer.
 	CancelPaid(ctx context.Context, jastiperID, orderID uuid.UUID, note string) (Refund, error)
+
+	SavePayoutAccount(ctx context.Context, a PayoutAccount) (PayoutAccount, error)
+	PayoutAccount(ctx context.Context, userID uuid.UUID) (PayoutAccount, error)
+	// RequestPayout copies the saved bank account onto a new request of at most the available balance.
+	RequestPayout(ctx context.Context, jastiperID uuid.UUID, amount int64) (Payout, error)
+	ListMyPayouts(ctx context.Context, jastiperID uuid.UUID, limit int, cursor string) (PayoutPage, error)
+	ListPayouts(ctx context.Context, status PayoutStatus, limit int, cursor string) (PayoutPage, error)
+	MarkPayoutPaid(ctx context.Context, adminID, payoutID uuid.UUID, reference string) (Payout, error)
+	RejectPayout(ctx context.Context, adminID, payoutID uuid.UUID, reason string) (Payout, error)
 }
 
 type auditWriter interface {
@@ -382,6 +435,168 @@ func (s *service) CancelPaid(ctx context.Context, jastiperID, orderID uuid.UUID,
 		return Refund{}, &InputError{Detail: "Reason must not be blank."}
 	}
 	return s.Refund(ctx, order.Actor{ID: jastiperID, Type: order.ActorJastiper}, orderID, RefundJastiperCancelled, note)
+}
+
+func (s *service) SavePayoutAccount(ctx context.Context, a PayoutAccount) (PayoutAccount, error) {
+	a.BankName, a.AccountName = strings.TrimSpace(a.BankName), strings.TrimSpace(a.AccountName)
+	a.AccountNumber = strings.TrimSpace(a.AccountNumber)
+	if a.BankName == "" || a.AccountName == "" {
+		return PayoutAccount{}, &InputError{Detail: "Bank name and account name must not be blank."}
+	}
+	return s.repo.SavePayoutAccount(ctx, a)
+}
+
+func (s *service) PayoutAccount(ctx context.Context, userID uuid.UUID) (PayoutAccount, error) {
+	return s.repo.PayoutAccount(ctx, userID)
+}
+
+func (s *service) RequestPayout(ctx context.Context, jastiperID uuid.UUID, amount int64) (Payout, error) {
+	if amount < 1 {
+		return Payout{}, &InputError{Detail: "Amount must be positive."}
+	}
+	var p Payout
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		// The account row lock serializes a jastiper's requests, so the balance check cannot race.
+		acc, err := s.repo.LockPayoutAccount(ctx, jastiperID)
+		if err != nil {
+			return err
+		}
+		available, err := s.availableBalance(ctx, jastiperID)
+		if err != nil {
+			return err
+		}
+		if amount > available {
+			return ErrInsufficientFunds
+		}
+		p = Payout{
+			ID:            uuid.Must(uuid.NewV7()),
+			JastiperID:    jastiperID,
+			Amount:        amount,
+			BankName:      acc.BankName,
+			AccountNumber: acc.AccountNumber,
+			AccountName:   acc.AccountName,
+			Status:        PayoutRequested,
+		}
+		if err := s.repo.CreatePayout(ctx, p); err != nil {
+			return err
+		}
+		p, err = s.repo.Payout(ctx, p.ID)
+		return err
+	})
+	return p, err
+}
+
+func (s *service) availableBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error) {
+	payable, err := s.repo.AccountBalance(ctx, account{Kind: accountJastiperPayable, UserID: &jastiperID})
+	if err != nil {
+		return 0, err
+	}
+	requested, err := s.repo.RequestedPayoutTotal(ctx, jastiperID)
+	return payable - requested, err
+}
+
+func (s *service) ListMyPayouts(ctx context.Context, jastiperID uuid.UUID, limit int, cursor string) (PayoutPage, error) {
+	before, err := pagination.Decode(cursor, pagination.Newest)
+	if err != nil {
+		return PayoutPage{}, err
+	}
+	rows, err := s.repo.ListPayoutsByJastiper(ctx, jastiperID, before, limit+1)
+	if err != nil {
+		return PayoutPage{}, err
+	}
+	return newPayoutPage(rows, limit), nil
+}
+
+func (s *service) ListPayouts(ctx context.Context, status PayoutStatus, limit int, cursor string) (PayoutPage, error) {
+	after, err := pagination.Decode(cursor, pagination.Cursor{})
+	if err != nil {
+		return PayoutPage{}, err
+	}
+	rows, err := s.repo.ListPayoutQueue(ctx, payoutFilter{Status: status, After: after, Limit: limit + 1})
+	if err != nil {
+		return PayoutPage{}, err
+	}
+	return newPayoutPage(rows, limit), nil
+}
+
+func newPayoutPage(rows []Payout, limit int) PayoutPage {
+	items, next := pagination.Page(rows, limit, func(p Payout) pagination.Cursor {
+		return pagination.Cursor{At: p.RequestedAt, ID: p.ID}
+	})
+	return PayoutPage{Items: items, NextCursor: next}
+}
+
+func (s *service) MarkPayoutPaid(ctx context.Context, adminID, payoutID uuid.UUID, reference string) (Payout, error) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return Payout{}, &InputError{Detail: "Reference must not be blank."}
+	}
+	return s.decidePayout(ctx, adminID, payoutID, func(ctx context.Context, p *Payout) error {
+		p.Status, p.Reference = PayoutPaid, reference
+		return s.post(ctx, ledgerTransaction{
+			Kind:           "payout",
+			IdempotencyKey: "payout:" + p.ID.String(),
+			CreatedBy:      &adminID,
+			Entries: []entry{
+				{Account: account{Kind: accountJastiperPayable, UserID: &p.JastiperID}, Direction: debit, Amount: p.Amount},
+				{Account: account{Kind: accountGatewayClearing}, Direction: credit, Amount: p.Amount},
+			},
+		})
+	})
+}
+
+func (s *service) RejectPayout(ctx context.Context, adminID, payoutID uuid.UUID, reason string) (Payout, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return Payout{}, &InputError{Detail: "Reason must not be blank."}
+	}
+	return s.decidePayout(ctx, adminID, payoutID, func(_ context.Context, p *Payout) error {
+		p.Status, p.RejectionReason = PayoutRejected, reason
+		return nil
+	})
+}
+
+// decidePayout locks a requested payout, applies the decision, then records it with a notification and audit row.
+func (s *service) decidePayout(ctx context.Context, adminID, payoutID uuid.UUID, decide func(ctx context.Context, p *Payout) error) (Payout, error) {
+	var p Payout
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		p, err = s.repo.LockPayout(ctx, payoutID)
+		if err != nil {
+			return err
+		}
+		if p.Status != PayoutRequested {
+			return ErrPayoutNotRequested
+		}
+		if err := decide(ctx, &p); err != nil {
+			return err
+		}
+		at := s.now()
+		p.DecidedBy, p.DecidedAt = &adminID, &at
+		if err := s.repo.DecidePayout(ctx, p); err != nil {
+			return err
+		}
+
+		typ, data := notification.TypePayoutPaid, map[string]any{"payoutId": p.ID, "amount": p.Amount}
+		meta := map[string]any{"amount": p.Amount, "jastiperId": p.JastiperID, "reference": p.Reference}
+		if p.Status == PayoutRejected {
+			typ, data["reason"] = notification.TypePayoutRejected, p.RejectionReason
+			meta = map[string]any{"amount": p.Amount, "jastiperId": p.JastiperID, "reason": p.RejectionReason}
+		}
+		err = s.notifier.Notify(ctx, notification.Event{Type: typ, Recipients: []uuid.UUID{p.JastiperID}, Data: data})
+		if err != nil {
+			return err
+		}
+		return s.audit.Write(ctx, audit.Entry{
+			ActorID:    &adminID,
+			ActorType:  string(order.ActorAdmin),
+			Action:     "payout." + string(p.Status),
+			TargetType: "payout",
+			TargetID:   p.ID.String(),
+			Metadata:   meta,
+		})
+	})
+	return p, err
 }
 
 func actorID(a order.Actor) *uuid.UUID {
