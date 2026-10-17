@@ -11,14 +11,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type openFilter struct {
-	Now   time.Time
-	City  string
-	After pagination.Cursor
-	Limit int
+	Now  time.Time
+	City string
+	// From and To bound departs_on inclusively; nil leaves that side open.
+	From, To *time.Time
+	After    pagination.Cursor
+	Limit    int
 }
 
 type repository interface {
@@ -35,6 +38,10 @@ type repository interface {
 	Lock(ctx context.Context, id uuid.UUID) (Trip, error)
 	// AdjustReserved adds units (negative to release) to reserved_capacity.
 	AdjustReserved(ctx context.Context, id uuid.UUID, units int) error
+	UpdateTrip(ctx context.Context, t Trip) error
+	// ActiveOrders counts the trip's orders that are neither finished nor dropped.
+	ActiveOrders(ctx context.Context, tripID uuid.UUID) (int64, error)
+	CancelTrip(ctx context.Context, id uuid.UUID) error
 	CloseExpired(ctx context.Context, now time.Time) (int64, error)
 	// CompleteReturned completes closed trips that returned before today and have no active order.
 	CompleteReturned(ctx context.Context, today time.Time) (int64, error)
@@ -107,6 +114,8 @@ func (r *pgRepository) ListOpen(ctx context.Context, f openFilter) ([]Trip, erro
 	rows, err := r.q(ctx).ListOpenTrips(ctx, db.ListOpenTripsParams{
 		Now:            f.Now,
 		City:           f.City,
+		DepartsFrom:    toDate(f.From),
+		DepartsTo:      toDate(f.To),
 		AfterDepartsOn: f.After.At,
 		AfterID:        f.After.ID,
 		RowLimit:       int32(f.Limit),
@@ -153,6 +162,28 @@ func (r *pgRepository) Lock(ctx context.Context, id uuid.UUID) (Trip, error) {
 
 func (r *pgRepository) AdjustReserved(ctx context.Context, id uuid.UUID, units int) error {
 	return r.q(ctx).AdjustTripReservedCapacity(ctx, db.AdjustTripReservedCapacityParams{Units: int32(units), ID: id})
+}
+
+func (r *pgRepository) UpdateTrip(ctx context.Context, t Trip) error {
+	return r.q(ctx).UpdateTrip(ctx, db.UpdateTripParams{
+		ID:                 t.ID,
+		Title:              t.Title,
+		Description:        t.Description,
+		DestinationCity:    t.DestinationCity,
+		DestinationCountry: t.DestinationCountry,
+		DepartsOn:          t.DepartsOn,
+		ReturnsOn:          t.ReturnsOn,
+		RequestDeadline:    t.RequestDeadline,
+		Capacity:           int32(t.Capacity),
+	})
+}
+
+func (r *pgRepository) ActiveOrders(ctx context.Context, tripID uuid.UUID) (int64, error) {
+	return r.q(ctx).CountActiveTripOrders(ctx, tripID)
+}
+
+func (r *pgRepository) CancelTrip(ctx context.Context, id uuid.UUID) error {
+	return r.q(ctx).CancelTrip(ctx, id)
 }
 
 func (r *pgRepository) CloseExpired(ctx context.Context, now time.Time) (int64, error) {
@@ -215,6 +246,13 @@ func toItem(it db.TripItem) Item {
 		ID: it.ID, TripID: it.TripID, Name: it.Name, Description: deref(it.Description), PhotoKey: deref(it.PhotoKey),
 		ReferencePrice: it.ReferencePrice, Position: int(it.Position),
 	}
+}
+
+func toDate(t *time.Time) pgtype.Date {
+	if t == nil {
+		return pgtype.Date{}
+	}
+	return pgtype.Date{Time: *t, Valid: true}
 }
 
 func nonEmpty(s string) *string {

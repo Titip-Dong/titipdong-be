@@ -116,6 +116,8 @@ func TestTripErrors(t *testing.T) {
 		{"unknown slug", http.MethodGet, "/trips/nope", "", "", http.StatusNotFound},
 		{"bad cursor", http.MethodGet, "/trips?cursor=garbage", "", "", http.StatusUnprocessableEntity},
 		{"limit too high", http.MethodGet, "/trips?limit=500", "", "", http.StatusUnprocessableEntity},
+		{"bad from date", http.MethodGet, "/trips?from=10-10-2026", "", "", http.StatusUnprocessableEntity},
+		{"to before from", http.MethodGet, "/trips?from=2026-10-12&to=2026-10-11", "", "", http.StatusUnprocessableEntity},
 		{"close unknown", http.MethodPost, "/trips/" + uuid.NewString() + "/close", "jastiper", "", http.StatusNotFound},
 		{"my trips as buyer", http.MethodGet, "/me/trips", "buyer", "", http.StatusForbidden},
 	}
@@ -175,5 +177,57 @@ func TestCatalogEndpoints(t *testing.T) {
 				t.Errorf("status = %d, want %d (body %v)", status, tt.want, body)
 			}
 		})
+	}
+}
+
+func TestUpdateTripEndpoint(t *testing.T) {
+	app := newTestApp(t)
+	_, created := do(t, app, http.MethodPost, "/trips", "jastiper", createBody)
+	path := "/trips/" + created["id"].(string)
+
+	status, body := do(t, app, http.MethodPatch, path, "jastiper", `{"title":"Jastip Osaka","capacity":12,"returnsOn":"2026-10-21"}`)
+	if status != http.StatusOK || body["title"] != "Jastip Osaka" || body["capacity"] != float64(12) || body["returnsOn"] != "2026-10-21" || body["slug"] != created["slug"] {
+		t.Fatalf("PATCH status = %d, body = %v", status, body)
+	}
+	tests := []struct {
+		name, token, body string
+		want              int
+	}{
+		{"as buyer", "buyer", `{"title":"X"}`, http.StatusForbidden},
+		{"bad date", "jastiper", `{"departsOn":"10/10/2026"}`, http.StatusUnprocessableEntity},
+		{"capacity zero", "jastiper", `{"capacity":0}`, http.StatusUnprocessableEntity},
+		{"returns before departs", "jastiper", `{"returnsOn":"2026-10-01"}`, http.StatusUnprocessableEntity},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if status, body := do(t, app, http.MethodPatch, path, tt.token, tt.body); status != tt.want {
+				t.Errorf("status = %d, want %d (body %v)", status, tt.want, body)
+			}
+		})
+	}
+	if status, _ := do(t, app, http.MethodPatch, "/trips/"+uuid.NewString(), "jastiper", `{"title":"X"}`); status != http.StatusNotFound {
+		t.Errorf("PATCH unknown trip status = %d, want 404", status)
+	}
+	do(t, app, http.MethodPost, path+"/close", "jastiper", "")
+	if status, _ := do(t, app, http.MethodPatch, path, "jastiper", `{"title":"X"}`); status != http.StatusConflict {
+		t.Errorf("PATCH closed trip status = %d, want 409", status)
+	}
+}
+
+func TestCancelTripEndpoint(t *testing.T) {
+	app := newTestApp(t)
+	_, created := do(t, app, http.MethodPost, "/trips", "jastiper", createBody)
+	path := "/trips/" + created["id"].(string) + "/cancel"
+	if status, _ := do(t, app, http.MethodPost, path, "buyer", ""); status != http.StatusForbidden {
+		t.Errorf("cancel as buyer status = %d, want 403", status)
+	}
+	if status, body := do(t, app, http.MethodPost, path, "jastiper", ""); status != http.StatusOK || body["status"] != "cancelled" {
+		t.Fatalf("cancel status = %d, body = %v", status, body)
+	}
+	if status, _ := do(t, app, http.MethodPost, path, "jastiper", ""); status != http.StatusConflict {
+		t.Errorf("cancel twice status = %d, want 409", status)
+	}
+	if status, _ := do(t, app, http.MethodPost, "/trips/"+uuid.NewString()+"/cancel", "jastiper", ""); status != http.StatusNotFound {
+		t.Errorf("cancel unknown status = %d, want 404", status)
 	}
 }

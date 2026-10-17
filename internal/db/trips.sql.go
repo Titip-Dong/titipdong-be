@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const adjustTripReservedCapacity = `-- name: AdjustTripReservedCapacity :exec
@@ -25,6 +26,17 @@ type AdjustTripReservedCapacityParams struct {
 
 func (q *Queries) AdjustTripReservedCapacity(ctx context.Context, arg AdjustTripReservedCapacityParams) error {
 	_, err := q.db.Exec(ctx, adjustTripReservedCapacity, arg.Units, arg.ID)
+	return err
+}
+
+const cancelTrip = `-- name: CancelTrip :exec
+UPDATE trips
+SET status = 'cancelled', updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) CancelTrip(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, cancelTrip, id)
 	return err
 }
 
@@ -74,6 +86,18 @@ func (q *Queries) CompleteReturnedTrips(ctx context.Context, today time.Time) (i
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const countActiveTripOrders = `-- name: CountActiveTripOrders :one
+SELECT count(*) FROM orders
+WHERE trip_id = $1 AND status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed')
+`
+
+func (q *Queries) CountActiveTripOrders(ctx context.Context, tripID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveTripOrders, tripID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const createTrip = `-- name: CreateTrip :exec
@@ -194,14 +218,18 @@ WHERE t.status = 'open'
   AND t.request_deadline > $1::timestamptz
   AND t.reserved_capacity < t.capacity
   AND t.destination_city ILIKE $2::text || '%'
-  AND (t.departs_on, t.id) > ($3::date, $4::uuid)
+  AND ($3::date IS NULL OR t.departs_on >= $3::date)
+  AND ($4::date IS NULL OR t.departs_on <= $4::date)
+  AND (t.departs_on, t.id) > ($5::date, $6::uuid)
 ORDER BY t.departs_on, t.id
-LIMIT $5
+LIMIT $7
 `
 
 type ListOpenTripsParams struct {
 	Now            time.Time
 	City           string
+	DepartsFrom    pgtype.Date
+	DepartsTo      pgtype.Date
 	AfterDepartsOn time.Time
 	AfterID        uuid.UUID
 	RowLimit       int32
@@ -216,6 +244,8 @@ func (q *Queries) ListOpenTrips(ctx context.Context, arg ListOpenTripsParams) ([
 	rows, err := q.db.Query(ctx, listOpenTrips,
 		arg.Now,
 		arg.City,
+		arg.DepartsFrom,
+		arg.DepartsTo,
 		arg.AfterDepartsOn,
 		arg.AfterID,
 		arg.RowLimit,
@@ -354,4 +384,38 @@ func (q *Queries) LockTrip(ctx context.Context, id uuid.UUID) (LockTripRow, erro
 		&i.JastiperName,
 	)
 	return i, err
+}
+
+const updateTrip = `-- name: UpdateTrip :exec
+UPDATE trips
+SET title = $2, description = $3, destination_city = $4, destination_country = $5, departs_on = $6,
+    returns_on = $7, request_deadline = $8, capacity = $9, updated_at = now()
+WHERE id = $1
+`
+
+type UpdateTripParams struct {
+	ID                 uuid.UUID
+	Title              string
+	Description        string
+	DestinationCity    string
+	DestinationCountry string
+	DepartsOn          time.Time
+	ReturnsOn          time.Time
+	RequestDeadline    time.Time
+	Capacity           int32
+}
+
+func (q *Queries) UpdateTrip(ctx context.Context, arg UpdateTripParams) error {
+	_, err := q.db.Exec(ctx, updateTrip,
+		arg.ID,
+		arg.Title,
+		arg.Description,
+		arg.DestinationCity,
+		arg.DestinationCountry,
+		arg.DepartsOn,
+		arg.ReturnsOn,
+		arg.RequestDeadline,
+		arg.Capacity,
+	)
+	return err
 }

@@ -116,6 +116,27 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}, h.deleteItem)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "cancelTrip",
+		Method:      http.MethodPost,
+		Path:        "/trips/{id}/cancel",
+		Summary:     "Cancel a trip that has no active orders",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict},
+	}, h.cancel)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "updateTrip",
+		Method:      http.MethodPatch,
+		Path:        "/trips/{id}",
+		Summary:     "Edit an open trip",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict,
+			http.StatusUnprocessableEntity},
+	}, h.update)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "listMyTrips",
 		Method:      http.MethodGet,
 		Path:        "/me/trips",
@@ -153,6 +174,17 @@ type tripResponse struct {
 	AcceptsRequests    bool      `json:"acceptsRequests"`
 	Jastiper           jastiper  `json:"jastiper"`
 	CreatedAt          time.Time `json:"createdAt"`
+}
+
+type updateTripRequest struct {
+	Title              *string    `json:"title,omitempty" minLength:"1" maxLength:"120"`
+	Description        *string    `json:"description,omitempty" maxLength:"2000"`
+	DestinationCity    *string    `json:"destinationCity,omitempty" minLength:"1" maxLength:"100"`
+	DestinationCountry *string    `json:"destinationCountry,omitempty" pattern:"^[A-Za-z]{2}$" doc:"ISO 3166-1 alpha-2"`
+	DepartsOn          *string    `json:"departsOn,omitempty" format:"date"`
+	ReturnsOn          *string    `json:"returnsOn,omitempty" format:"date"`
+	RequestDeadline    *time.Time `json:"requestDeadline,omitempty"`
+	Capacity           *int       `json:"capacity,omitempty" minimum:"1" maximum:"1000"`
 }
 
 type itemRequest struct {
@@ -236,10 +268,17 @@ func (h *Handler) create(ctx context.Context, in *struct{ Body createTripRequest
 
 func (h *Handler) list(ctx context.Context, in *struct {
 	City   string `query:"city" maxLength:"100" doc:"Destination city prefix, case-insensitive"`
+	From   string `query:"from" format:"date" doc:"Earliest departure date, inclusive"`
+	To     string `query:"to" format:"date" doc:"Latest departure date, inclusive"`
 	Limit  int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
 	Cursor string `query:"cursor"`
 }) (*struct{ Body tripPage }, error) {
-	page, err := h.svc.List(ctx, ListParams{City: in.City, Limit: in.Limit, Cursor: in.Cursor})
+	from, err1 := optionalDate(in.From)
+	to, err2 := optionalDate(in.To)
+	if err := errors.Join(err1, err2); err != nil {
+		return nil, huma.Error422UnprocessableEntity("Dates must use the YYYY-MM-DD format.")
+	}
+	page, err := h.svc.List(ctx, ListParams{City: in.City, From: from, To: to, Limit: in.Limit, Cursor: in.Cursor})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -275,6 +314,50 @@ func (h *Handler) close(ctx context.Context, in *struct {
 		return nil, mapError(err)
 	}
 	return &tripOutput{Body: toTripResponse(t)}, nil
+}
+
+func (h *Handler) cancel(ctx context.Context, in *struct {
+	ID uuid.UUID `path:"id"`
+}) (*tripOutput, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	t, err := h.svc.Cancel(ctx, p.UserID, in.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &tripOutput{Body: toTripResponse(t)}, nil
+}
+
+func (h *Handler) update(ctx context.Context, in *struct {
+	ID   uuid.UUID `path:"id"`
+	Body updateTripRequest
+}) (*tripOutput, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	departs, err1 := optionalDatePtr(in.Body.DepartsOn)
+	returns, err2 := optionalDatePtr(in.Body.ReturnsOn)
+	if err := errors.Join(err1, err2); err != nil {
+		return nil, huma.Error422UnprocessableEntity("Dates must use the YYYY-MM-DD format.")
+	}
+	t, err := h.svc.Update(ctx, p.UserID, in.ID, UpdateParams{
+		Title:              in.Body.Title,
+		Description:        in.Body.Description,
+		DestinationCity:    in.Body.DestinationCity,
+		DestinationCountry: in.Body.DestinationCountry,
+		DepartsOn:          departs,
+		ReturnsOn:          returns,
+		RequestDeadline:    in.Body.RequestDeadline,
+		Capacity:           in.Body.Capacity,
+	})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &tripOutput{Body: toTripResponse(t)}, nil
+}
+
+func optionalDatePtr(s *string) (*time.Time, error) {
+	if s == nil {
+		return nil, nil
+	}
+	return optionalDate(*s)
 }
 
 func (h *Handler) listMine(ctx context.Context, in *pageInput) (*struct{ Body tripPage }, error) {
@@ -361,6 +444,14 @@ func (h *Handler) toItemResponse(it Item) itemResponse {
 	}
 }
 
+func optionalDate(s string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
+	d, err := time.Parse(dateLayout, s)
+	return &d, err
+}
+
 func mapError(err error) error {
 	var inputErr *InputError
 	switch {
@@ -374,6 +465,10 @@ func mapError(err error) error {
 		return huma.Error409Conflict("Trip is already closed.")
 	case errors.Is(err, ErrItemNotFound):
 		return huma.Error404NotFound("Item not found.")
+	case errors.Is(err, ErrNotCancelable):
+		return huma.Error409Conflict("Only an open or closed trip can be cancelled.")
+	case errors.Is(err, ErrActiveOrders):
+		return huma.Error409Conflict("Trip still has active orders. Settle them before cancelling.")
 	case errors.Is(err, ErrCatalogLocked):
 		return huma.Error409Conflict("The catalog of a completed or cancelled trip cannot change.")
 	}

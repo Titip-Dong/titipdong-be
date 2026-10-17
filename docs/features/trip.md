@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------- |
 | Package | `internal/trip`                                                        |
 | Tag     | `trip`                                                                 |
-| Status  | Partial: create, list, get, close, my trips, capacity, catalog done; edit, cancel, date filters to do |
+| Status  | Done                                                                   |
 
 ## Overview
 
@@ -29,8 +29,10 @@ the order's transaction, so the dependency stays one-way (`order → trip`).
   - `closed` → `completed`: set by the same job once `returns_on` has passed (by UTC date) and no order is still
     active (`requested`, `approved`, `paid`, `shipped`, `delivered`, `disputed`).
   - `open`/`closed` → `cancelled`: by the jastiper, only when the trip has no active order (`requested`, `approved`,
-    `paid`, `shipped`, `delivered`, `disputed`).
-- Editing (`PATCH`) is allowed while `open`. `capacity` cannot drop below `reserved_capacity`.
+    `paid`, `shipped`, `delivered`, `disputed`); otherwise 409. The check runs under the trip's row lock, which
+    `Reserve` also takes, so no order can slip in. Nobody is notified: without active orders there is no one to tell.
+- Editing (`PATCH`) is allowed while `open`. `capacity` cannot drop below `reserved_capacity`. Every field of
+  `createTrip` is optional on `PATCH`; the merged trip must pass the create rules, and the slug never changes.
 - Catalog items (`trip_items`) are edited while the trip is `open` or `closed`. `reference_price` is indicative; the
   final price is set per order at approval. Photos are uploads with purpose `trip_item_photo`.
 
@@ -131,13 +133,13 @@ DESC, id DESC)`.
 
 | Method   | Path                            | operationId       | Auth               | Status | Description                                    |
 | -------- | ------------------------------- | ----------------- | ------------------ | ------ | ---------------------------------------------- |
-| `GET`    | `/trips`                        | `listTrips`       | Public             | Done   | Open trips accepting requests; filter `city`; cursor |
+| `GET`    | `/trips`                        | `listTrips`       | Public             | Done   | Open trips accepting requests; filter `city`, `from`, `to`; cursor |
 | `GET`    | `/trips/{slug}`                 | `getTrip`         | Public             | Done   | Trip detail                                    |
 | `POST`   | `/trips`                        | `createTrip`      | `jastiper`         | Done   | Create a trip                                  |
 | `POST`   | `/trips/{id}/close`             | `closeTrip`       | `jastiper` (owner) | Done   | Stop accepting requests                        |
 | `GET`    | `/me/trips`                     | `listMyTrips`     | `jastiper`         | Done   | The caller's trips                             |
-| `PATCH`  | `/trips/{id}`                   | `updateTrip`      | `jastiper` (owner) | To do  | Edit an open trip                              |
-| `POST`   | `/trips/{id}/cancel`            | `cancelTrip`      | `jastiper` (owner) | To do  | Cancel a trip without active orders            |
+| `PATCH`  | `/trips/{id}`                   | `updateTrip`      | `jastiper` (owner) | Done   | Edit an open trip                              |
+| `POST`   | `/trips/{id}/cancel`            | `cancelTrip`      | `jastiper` (owner) | Done   | Cancel a trip without active orders            |
 | `GET`    | `/trips/{id}/items`             | `listTripItems`   | Public             | Done   | Catalog items in display order                 |
 | `POST`   | `/trips/{id}/items`             | `createTripItem`  | `jastiper` (owner) | Done   | Add a catalog item                             |
 | `PATCH`  | `/trips/{id}/items/{itemId}`    | `updateTripItem`  | `jastiper` (owner) | Done   | Edit a catalog item                            |
@@ -145,7 +147,8 @@ DESC, id DESC)`.
 
 `createTrip` takes `capacity` (required, 1–1000 items). Trip responses carry `capacity` and `remainingCapacity`
 (`capacity - reserved_capacity`); `acceptsRequests` is false when no capacity remains, and `listTrips` leaves full
-trips out. `getTrip` embeds the catalog (`items`). To do: `listTrips` gains `from` / `to` filters on `departsOn`.
+trips out. `getTrip` embeds the catalog (`items`). `listTrips` filters `from` / `to` (`YYYY-MM-DD`, inclusive) on
+`departsOn`; `to` before `from` returns 422.
 
 Catalog items: `{ id, name, description, referencePrice, photoUrl, position }` (`description`, `referencePrice`,
 `photoUrl` omitted when empty). `createTripItem` / `updateTripItem` take `name` (1–120, required on create),
@@ -263,10 +266,7 @@ Done:
 - [x] `capacity` in create and responses, `remainingCapacity`; `Reserve` / `Release` under a row lock; integration
       test for concurrent `Reserve`.
 - [x] `trip_items` table and catalog CRUD with photos; `getTrip` embeds the catalog.
+- [x] `from` / `to` filters on `listTrips`.
+- [x] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.
 - [x] Job `trips.close_expired` every 5 minutes (`open` → `closed` after the deadline, `closed` → `completed` after the
       return date with no active order).
-
-Remaining:
-
-- [ ] `from` / `to` filters on `listTrips`.
-- [ ] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.
