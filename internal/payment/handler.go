@@ -140,11 +140,21 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		OperationID: "getWallet",
 		Method:      http.MethodGet,
 		Path:        "/wallet",
-		Summary:     "Return the jastiper's released earnings not yet paid out",
+		Summary:     "Return the jastiper's balance, available amount, money in escrow, and pending payouts",
 		Tags:        []string{tag},
 		Security:    auth.Security(auth.RoleJastiper),
 		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden},
 	}, h.wallet)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "listWalletTransactions",
+		Method:      http.MethodGet,
+		Path:        "/wallet/transactions",
+		Summary:     "List the postings on the jastiper's balance, newest first",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
+	}, h.walletEntries)
 }
 
 type paymentResponse struct {
@@ -214,7 +224,26 @@ type payoutOutput struct {
 }
 
 type walletResponse struct {
-	Balance int64 `json:"balance" doc:"Whole rupiah"`
+	Balance       int64 `json:"balance" doc:"Released earnings not paid out, whole rupiah"`
+	Available     int64 `json:"available" doc:"Balance minus requested payouts: what can be requested now"`
+	InEscrow      int64 `json:"inEscrow" doc:"Totals of the jastiper's orders still held in escrow, before the 5% fee"`
+	PendingPayout int64 `json:"pendingPayout" doc:"Payouts requested and not yet decided"`
+}
+
+type walletEntryResponse struct {
+	ID        int64      `json:"id"`
+	Kind      string     `json:"kind" enum:"release,payout"`
+	Direction string     `json:"direction" enum:"credit,debit" doc:"credit adds to the balance, debit takes from it"`
+	Amount    int64      `json:"amount"`
+	OrderID   *uuid.UUID `json:"orderId,omitempty"`
+	OrderCode string     `json:"orderCode,omitempty"`
+	PayoutID  *uuid.UUID `json:"payoutId,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+}
+
+type walletEntryPage struct {
+	Items      []walletEntryResponse `json:"items"`
+	NextCursor string                `json:"nextCursor,omitempty"`
 }
 
 func (h *Handler) checkout(ctx context.Context, in *struct {
@@ -399,11 +428,27 @@ func toPayoutResponse(p Payout) payoutResponse {
 
 func (h *Handler) wallet(ctx context.Context, _ *struct{}) (*struct{ Body walletResponse }, error) {
 	p, _ := auth.PrincipalFrom(ctx)
-	balance, err := h.svc.JastiperBalance(ctx, p.UserID)
+	w, err := h.svc.Wallet(ctx, p.UserID)
 	if err != nil {
 		return nil, err
 	}
-	return &struct{ Body walletResponse }{Body: walletResponse{Balance: balance}}, nil
+	return &struct{ Body walletResponse }{Body: walletResponse(w)}, nil
+}
+
+func (h *Handler) walletEntries(ctx context.Context, in *struct {
+	Limit  int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
+	Cursor string `query:"cursor"`
+}) (*struct{ Body walletEntryPage }, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	page, err := h.svc.WalletEntries(ctx, p.UserID, in.Limit, in.Cursor)
+	if err != nil {
+		return nil, mapPayoutError(err)
+	}
+	items := make([]walletEntryResponse, len(page.Items))
+	for i, e := range page.Items {
+		items[i] = walletEntryResponse(e)
+	}
+	return &struct{ Body walletEntryPage }{Body: walletEntryPage{Items: items, NextCursor: page.NextCursor}}, nil
 }
 
 func result(p Payment, err error) (*paymentOutput, error) {

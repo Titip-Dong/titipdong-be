@@ -109,6 +109,32 @@ type Payout struct {
 	DecidedAt       *time.Time
 }
 
+// Wallet is a jastiper's money in whole rupiah. Balance is released earnings not paid out; Available subtracts
+// requested payouts; InEscrow is the total of their orders still held, before the platform fee.
+type Wallet struct {
+	Balance       int64
+	Available     int64
+	InEscrow      int64
+	PendingPayout int64
+}
+
+// WalletEntry is one posting on the jastiper's payable account.
+type WalletEntry struct {
+	ID        int64
+	Kind      string
+	Direction string
+	Amount    int64
+	OrderID   *uuid.UUID
+	OrderCode string
+	PayoutID  *uuid.UUID
+	CreatedAt time.Time
+}
+
+type WalletPage struct {
+	Items      []WalletEntry
+	NextCursor string
+}
+
 // Totals are platform-wide ledger balances in whole rupiah.
 type Totals struct {
 	EscrowHeld         int64
@@ -145,6 +171,8 @@ type Service interface {
 	// (buyer, admin deciding a dispute, or the system) and is recorded in the audit log.
 	Release(ctx context.Context, actor order.Actor, orderID uuid.UUID) (order.Order, error)
 	JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error)
+	Wallet(ctx context.Context, jastiperID uuid.UUID) (Wallet, error)
+	WalletEntries(ctx context.Context, jastiperID uuid.UUID, limit int, cursor string) (WalletPage, error)
 	// PlatformTotals sums the ledger for the admin dashboard.
 	PlatformTotals(ctx context.Context) (Totals, error)
 	// Refund returns a paid or disputed order's whole total to the buyer and marks the order refunded.
@@ -639,6 +667,38 @@ func (s *service) PlatformTotals(ctx context.Context) (Totals, error) {
 		PayableOutstanding: b[accountJastiperPayable],
 		BuyerRefundable:    b[accountBuyerRefundable],
 	}, nil
+}
+
+func (s *service) Wallet(ctx context.Context, jastiperID uuid.UUID) (Wallet, error) {
+	var w Wallet
+	var err error
+	if w.Balance, err = s.JastiperBalance(ctx, jastiperID); err != nil {
+		return Wallet{}, err
+	}
+	if w.PendingPayout, err = s.repo.RequestedPayoutTotal(ctx, jastiperID); err != nil {
+		return Wallet{}, err
+	}
+	if w.InEscrow, err = s.repo.EscrowHeldFor(ctx, jastiperID); err != nil {
+		return Wallet{}, err
+	}
+	w.Available = w.Balance - w.PendingPayout
+	return w, nil
+}
+
+func (s *service) WalletEntries(ctx context.Context, jastiperID uuid.UUID, limit int, cursor string) (WalletPage, error) {
+	before, err := pagination.DecodeID(cursor)
+	if err != nil {
+		return WalletPage{}, err
+	}
+	rows, err := s.repo.AccountEntries(ctx, account{Kind: accountJastiperPayable, UserID: &jastiperID}, before, limit+1)
+	if err != nil {
+		return WalletPage{}, err
+	}
+	if len(rows) <= limit {
+		return WalletPage{Items: rows}, nil
+	}
+	rows = rows[:limit]
+	return WalletPage{Items: rows, NextCursor: pagination.EncodeID(rows[len(rows)-1].ID)}, nil
 }
 
 func (s *service) JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error) {

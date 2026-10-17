@@ -15,6 +15,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/audit"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
 	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
@@ -667,5 +668,51 @@ func TestOrderPhotoFailureRollsBackReservation(t *testing.T) {
 	}
 	if left := f.remainingCapacity(t, o.TripID); left != 8 {
 		t.Errorf("remaining capacity = %d, want 8: the failed order must not keep its reservation", left)
+	}
+}
+
+func TestWallet(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	released := f.releasedOrder(t, 100_000) // +95.000 to the balance
+	f.paidOrder(t, 1, 50_000, 0)            // 50.000 held in escrow
+	if _, err := f.svc.SavePayoutAccount(ctx, PayoutAccount{UserID: f.jastiper, BankName: "BCA", AccountNumber: "1234567890", AccountName: "J"}); err != nil {
+		t.Fatal(err)
+	}
+	payout, err := f.svc.RequestPayout(ctx, f.jastiper, 30_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := f.svc.Wallet(ctx, f.jastiper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w != (Wallet{Balance: 95_000, Available: 65_000, InEscrow: 50_000, PendingPayout: 30_000}) {
+		t.Errorf("wallet = %+v", w)
+	}
+	if _, err := f.svc.MarkPayoutPaid(ctx, f.admin(t), payout.ID, "TRF-1"); err != nil {
+		t.Fatal(err)
+	}
+	if w, _ := f.svc.Wallet(ctx, f.jastiper); w != (Wallet{Balance: 65_000, Available: 65_000, InEscrow: 50_000}) {
+		t.Errorf("wallet after payout = %+v", w)
+	}
+
+	first, err := f.svc.WalletEntries(ctx, f.jastiper, 1, "")
+	if err != nil || len(first.Items) != 1 || first.NextCursor == "" {
+		t.Fatalf("WalletEntries(first page) = %+v, %v", first, err)
+	}
+	if e := first.Items[0]; e.Kind != "payout" || e.Direction != "debit" || e.Amount != 30_000 || e.PayoutID == nil || *e.PayoutID != payout.ID {
+		t.Errorf("newest entry = %+v, want the payout debit", e)
+	}
+	second, err := f.svc.WalletEntries(ctx, f.jastiper, 1, first.NextCursor)
+	if err != nil || len(second.Items) != 1 || second.NextCursor != "" {
+		t.Fatalf("WalletEntries(second page) = %+v, %v", second, err)
+	}
+	if e := second.Items[0]; e.Kind != "release" || e.Direction != "credit" || e.Amount != 95_000 || e.OrderCode != released.Code || e.PayoutID != nil {
+		t.Errorf("older entry = %+v, want the release credit", e)
+	}
+	if _, err := f.svc.WalletEntries(ctx, f.jastiper, 20, "garbage!"); !errors.Is(err, pagination.ErrInvalidCursor) {
+		t.Errorf("WalletEntries(bad cursor) error = %v", err)
 	}
 }

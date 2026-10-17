@@ -4,9 +4,6 @@ package admin
 
 import (
 	"context"
-	"encoding/base64"
-	"math"
-	"strconv"
 	"strings"
 	"time"
 
@@ -258,7 +255,7 @@ func (s *service) SetUserStatus(ctx context.Context, adminID, userID uuid.UUID, 
 }
 
 func (s *service) AuditLogs(ctx context.Context, q AuditQuery) (Page[AuditLog], error) {
-	before, err := decodeIDCursor(q.Cursor)
+	before, err := pagination.DecodeID(q.Cursor)
 	if err != nil {
 		return Page[AuditLog]{}, err
 	}
@@ -272,27 +269,7 @@ func (s *service) AuditLogs(ctx context.Context, q AuditQuery) (Page[AuditLog], 
 		return Page[AuditLog]{Items: rows}, nil
 	}
 	rows = rows[:q.Limit]
-	return Page[AuditLog]{Items: rows, NextCursor: encodeIDCursor(rows[len(rows)-1].ID)}, nil
-}
-
-// Audit log IDs are BIGINT identities, so their cursor is the last ID rather than a pagination.Cursor.
-func encodeIDCursor(id int64) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(id, 10)))
-}
-
-func decodeIDCursor(raw string) (int64, error) {
-	if raw == "" {
-		return math.MaxInt64, nil
-	}
-	b, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return 0, pagination.ErrInvalidCursor
-	}
-	id, err := strconv.ParseInt(string(b), 10, 64)
-	if err != nil || id < 1 {
-		return 0, pagination.ErrInvalidCursor
-	}
-	return id, nil
+	return Page[AuditLog]{Items: rows, NextCursor: pagination.EncodeID(rows[len(rows)-1].ID)}, nil
 }
 
 func escapeLike(s string) string {

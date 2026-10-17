@@ -3,6 +3,7 @@ package payment
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/Titip-Dong/titipdong-be/internal/db"
@@ -74,6 +75,10 @@ type repository interface {
 	// Post writes the transaction and its entries, or nothing if its idempotency key was already used.
 	Post(ctx context.Context, id uuid.UUID, t ledgerTransaction) error
 	AccountBalance(ctx context.Context, a account) (int64, error)
+	// EscrowHeldFor sums the escrow still held for the jastiper's orders.
+	EscrowHeldFor(ctx context.Context, jastiperID uuid.UUID) (int64, error)
+	// AccountEntries lists the entries of a per-user account below beforeID, newest first.
+	AccountEntries(ctx context.Context, a account, beforeID int64, limit int) ([]WalletEntry, error)
 	// BalancesByKind sums every account of each kind (credits minus debits).
 	BalancesByKind(ctx context.Context) (map[accountKind]int64, error)
 
@@ -221,6 +226,33 @@ func (r *pgRepository) accountID(ctx context.Context, a account) (uuid.UUID, err
 
 func (r *pgRepository) AccountBalance(ctx context.Context, a account) (int64, error) {
 	return r.q(ctx).LedgerAccountBalance(ctx, db.LedgerAccountBalanceParams{Kind: string(a.Kind), UserID: a.UserID})
+}
+
+func (r *pgRepository) EscrowHeldFor(ctx context.Context, jastiperID uuid.UUID) (int64, error) {
+	return r.q(ctx).JastiperEscrowHeld(ctx, jastiperID)
+}
+
+func (r *pgRepository) AccountEntries(ctx context.Context, a account, beforeID int64, limit int) ([]WalletEntry, error) {
+	rows, err := r.q(ctx).ListUserAccountEntries(ctx, db.ListUserAccountEntriesParams{
+		Kind: string(a.Kind), UserID: *a.UserID, BeforeID: beforeID, RowLimit: int32(limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]WalletEntry, len(rows))
+	for i, row := range rows {
+		out[i] = WalletEntry{
+			ID: row.ID, Kind: row.TransactionKind, Direction: row.Direction, Amount: row.Amount,
+			OrderID: row.OrderID, OrderCode: deref(row.OrderCode), CreatedAt: row.CreatedAt,
+		}
+		// Payout postings carry no order; their idempotency key is payout:<payout_id>.
+		if id, ok := strings.CutPrefix(row.IdempotencyKey, "payout:"); ok {
+			if payoutID, err := uuid.Parse(id); err == nil {
+				out[i].PayoutID = &payoutID
+			}
+		}
+	}
+	return out, nil
 }
 
 func (r *pgRepository) BalancesByKind(ctx context.Context) (map[accountKind]int64, error) {

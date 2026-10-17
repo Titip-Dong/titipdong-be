@@ -9,6 +9,7 @@ import (
 
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/httpserver"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/google/uuid"
 )
 
@@ -48,7 +49,7 @@ func (fakeService) SetUserStatus(_ context.Context, _, id uuid.UUID, status auth
 }
 
 func (f fakeService) AuditLogs(ctx context.Context, q AuditQuery) (Page[AuditLog], error) {
-	if _, err := decodeIDCursor(q.Cursor); err != nil {
+	if _, err := pagination.DecodeID(q.Cursor); err != nil {
 		return Page[AuditLog]{}, err
 	}
 	return Page[AuditLog]{}, nil
@@ -92,17 +93,5 @@ func TestAdminEndpoints(t *testing.T) {
 				t.Errorf("status = %d, want %d", res.StatusCode, tt.want)
 			}
 		})
-	}
-}
-
-func TestIDCursor(t *testing.T) {
-	id, err := decodeIDCursor(encodeIDCursor(42))
-	if err != nil || id != 42 {
-		t.Fatalf("round trip = %d, %v", id, err)
-	}
-	for _, raw := range []string{"!!", encodeIDCursor(0), "bm90LWEtbnVtYmVy"} {
-		if _, err := decodeIDCursor(raw); err == nil {
-			t.Errorf("decodeIDCursor(%q) succeeded", raw)
-		}
 	}
 }
