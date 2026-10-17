@@ -30,7 +30,8 @@ the order's transaction, so the dependency stays one-way (`order → trip`).
     active (`requested`, `approved`, `paid`, `shipped`, `delivered`, `disputed`).
   - `open`/`closed` → `cancelled`: by the jastiper, only when the trip has no active order (`requested`, `approved`,
     `paid`, `shipped`, `delivered`, `disputed`).
-- Editing (`PATCH`) is allowed while `open`. `capacity` cannot drop below `reserved_capacity`.
+- Editing (`PATCH`) is allowed while `open`. `capacity` cannot drop below `reserved_capacity`. Every field of
+  `createTrip` is optional on `PATCH`; the merged trip must pass the create rules, and the slug never changes.
 - Catalog items (`trip_items`) are edited while the trip is `open` or `closed`. `reference_price` is indicative; the
   final price is set per order at approval. Photos are uploads with purpose `trip_item_photo`.
 
@@ -136,7 +137,7 @@ DESC, id DESC)`.
 | `POST`   | `/trips`                        | `createTrip`      | `jastiper`         | Done   | Create a trip                                  |
 | `POST`   | `/trips/{id}/close`             | `closeTrip`       | `jastiper` (owner) | Done   | Stop accepting requests                        |
 | `GET`    | `/me/trips`                     | `listMyTrips`     | `jastiper`         | Done   | The caller's trips                             |
-| `PATCH`  | `/trips/{id}`                   | `updateTrip`      | `jastiper` (owner) | To do  | Edit an open trip                              |
+| `PATCH`  | `/trips/{id}`                   | `updateTrip`      | `jastiper` (owner) | Done   | Edit an open trip                              |
 | `POST`   | `/trips/{id}/cancel`            | `cancelTrip`      | `jastiper` (owner) | To do  | Cancel a trip without active orders            |
 | `GET`    | `/trips/{id}/items`             | `listTripItems`   | Public             | Done   | Catalog items in display order                 |
 | `POST`   | `/trips/{id}/items`             | `createTripItem`  | `jastiper` (owner) | Done   | Add a catalog item                             |
@@ -265,9 +266,10 @@ Done:
       test for concurrent `Reserve`.
 - [x] `trip_items` table and catalog CRUD with photos; `getTrip` embeds the catalog.
 - [x] `from` / `to` filters on `listTrips`.
+- [x] `PATCH /trips/{id}`.
 - [x] Job `trips.close_expired` every 5 minutes (`open` → `closed` after the deadline, `closed` → `completed` after the
       return date with no active order).
 
 Remaining:
 
-- [ ] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.
+- [ ] `POST /trips/{id}/cancel`.

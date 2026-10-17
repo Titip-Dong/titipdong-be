@@ -71,3 +71,9 @@ WHERE t.status = 'closed'
       WHERE o.trip_id = t.id
         AND o.status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed')
   );
+
+-- name: UpdateTrip :exec
+UPDATE trips
+SET title = $2, description = $3, destination_city = $4, destination_country = $5, departs_on = $6,
+    returns_on = $7, request_deadline = $8, capacity = $9, updated_at = now()
+WHERE id = $1;

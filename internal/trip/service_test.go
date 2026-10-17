@@ -101,6 +101,13 @@ func (r *fakeRepository) AdjustReserved(_ context.Context, id uuid.UUID, units i
 	return nil
 }
 
+func (r *fakeRepository) UpdateTrip(_ context.Context, t Trip) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.trips[t.ID] = t
+	return nil
+}
+
 func (r *fakeRepository) CloseExpired(_ context.Context, now time.Time) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -549,5 +556,46 @@ func TestListFiltersByDepartureDate(t *testing.T) {
 	var inputErr *InputError
 	if _, err := svc.List(ctx, ListParams{From: day(12), To: day(11), Limit: 20}); !errors.As(err, &inputErr) {
 		t.Errorf("List(to before from) error = %v, want *InputError", err)
+	}
+}
+
+func TestUpdate(t *testing.T) {
+	svc := newTestService()
+	ctx := t.Context()
+	jastiperID := uuid.New()
+	tr, err := svc.Create(ctx, jastiperID, validParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ptr := func(s string) *string { return &s }
+	capacity := 8
+	got, err := svc.Update(ctx, jastiperID, tr.ID, UpdateParams{Title: ptr(" Jastip Osaka "), DestinationCountry: ptr("jp"), Capacity: &capacity})
+	if err != nil || got.Title != "Jastip Osaka" || got.Capacity != 8 || got.Slug != tr.Slug || got.DestinationCity != "Tokyo" {
+		t.Fatalf("Update() = %+v, %v; want the new title and capacity, the old slug and city", got, err)
+	}
+
+	if err := svc.Reserve(ctx, tr.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	two := 2
+	var inputErr *InputError
+	if _, err := svc.Update(ctx, jastiperID, tr.ID, UpdateParams{Capacity: &two}); !errors.As(err, &inputErr) {
+		t.Errorf("Update(capacity below reserved) error = %v, want *InputError", err)
+	}
+	early := tr.DepartsOn.AddDate(0, 0, -1)
+	if _, err := svc.Update(ctx, jastiperID, tr.ID, UpdateParams{ReturnsOn: &early}); !errors.As(err, &inputErr) {
+		t.Errorf("Update(returns before departs) error = %v, want *InputError", err)
+	}
+	if _, err := svc.Update(ctx, jastiperID, tr.ID, UpdateParams{Title: ptr("  ")}); !errors.As(err, &inputErr) {
+		t.Errorf("Update(blank title) error = %v, want *InputError", err)
+	}
+	if _, err := svc.Update(ctx, uuid.New(), tr.ID, UpdateParams{Title: ptr("X")}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Update(other jastiper) error = %v, want ErrNotFound", err)
+	}
+	if _, err := svc.Close(ctx, jastiperID, tr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Update(ctx, jastiperID, tr.ID, UpdateParams{Title: ptr("X")}); !errors.Is(err, ErrNotOpen) {
+		t.Errorf("Update(closed) error = %v, want ErrNotOpen", err)
 	}
 }

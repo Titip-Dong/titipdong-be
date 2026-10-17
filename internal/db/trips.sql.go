@@ -362,3 +362,37 @@ func (q *Queries) LockTrip(ctx context.Context, id uuid.UUID) (LockTripRow, erro
 	)
 	return i, err
 }
+
+const updateTrip = `-- name: UpdateTrip :exec
+UPDATE trips
+SET title = $2, description = $3, destination_city = $4, destination_country = $5, departs_on = $6,
+    returns_on = $7, request_deadline = $8, capacity = $9, updated_at = now()
+WHERE id = $1
+`
+
+type UpdateTripParams struct {
+	ID                 uuid.UUID
+	Title              string
+	Description        string
+	DestinationCity    string
+	DestinationCountry string
+	DepartsOn          time.Time
+	ReturnsOn          time.Time
+	RequestDeadline    time.Time
+	Capacity           int32
+}
+
+func (q *Queries) UpdateTrip(ctx context.Context, arg UpdateTripParams) error {
+	_, err := q.db.Exec(ctx, updateTrip,
+		arg.ID,
+		arg.Title,
+		arg.Description,
+		arg.DestinationCity,
+		arg.DestinationCountry,
+		arg.DepartsOn,
+		arg.ReturnsOn,
+		arg.RequestDeadline,
+		arg.Capacity,
+	)
+	return err
+}

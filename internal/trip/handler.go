@@ -116,6 +116,17 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}, h.deleteItem)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "updateTrip",
+		Method:      http.MethodPatch,
+		Path:        "/trips/{id}",
+		Summary:     "Edit an open trip",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict,
+			http.StatusUnprocessableEntity},
+	}, h.update)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "listMyTrips",
 		Method:      http.MethodGet,
 		Path:        "/me/trips",
@@ -153,6 +164,17 @@ type tripResponse struct {
 	AcceptsRequests    bool      `json:"acceptsRequests"`
 	Jastiper           jastiper  `json:"jastiper"`
 	CreatedAt          time.Time `json:"createdAt"`
+}
+
+type updateTripRequest struct {
+	Title              *string    `json:"title,omitempty" minLength:"1" maxLength:"120"`
+	Description        *string    `json:"description,omitempty" maxLength:"2000"`
+	DestinationCity    *string    `json:"destinationCity,omitempty" minLength:"1" maxLength:"100"`
+	DestinationCountry *string    `json:"destinationCountry,omitempty" pattern:"^[A-Za-z]{2}$" doc:"ISO 3166-1 alpha-2"`
+	DepartsOn          *string    `json:"departsOn,omitempty" format:"date"`
+	ReturnsOn          *string    `json:"returnsOn,omitempty" format:"date"`
+	RequestDeadline    *time.Time `json:"requestDeadline,omitempty"`
+	Capacity           *int       `json:"capacity,omitempty" minimum:"1" maximum:"1000"`
 }
 
 type itemRequest struct {
@@ -282,6 +304,39 @@ func (h *Handler) close(ctx context.Context, in *struct {
 		return nil, mapError(err)
 	}
 	return &tripOutput{Body: toTripResponse(t)}, nil
+}
+
+func (h *Handler) update(ctx context.Context, in *struct {
+	ID   uuid.UUID `path:"id"`
+	Body updateTripRequest
+}) (*tripOutput, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	departs, err1 := optionalDatePtr(in.Body.DepartsOn)
+	returns, err2 := optionalDatePtr(in.Body.ReturnsOn)
+	if err := errors.Join(err1, err2); err != nil {
+		return nil, huma.Error422UnprocessableEntity("Dates must use the YYYY-MM-DD format.")
+	}
+	t, err := h.svc.Update(ctx, p.UserID, in.ID, UpdateParams{
+		Title:              in.Body.Title,
+		Description:        in.Body.Description,
+		DestinationCity:    in.Body.DestinationCity,
+		DestinationCountry: in.Body.DestinationCountry,
+		DepartsOn:          departs,
+		ReturnsOn:          returns,
+		RequestDeadline:    in.Body.RequestDeadline,
+		Capacity:           in.Body.Capacity,
+	})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &tripOutput{Body: toTripResponse(t)}, nil
+}
+
+func optionalDatePtr(s *string) (*time.Time, error) {
+	if s == nil {
+		return nil, nil
+	}
+	return optionalDate(*s)
 }
 
 func (h *Handler) listMine(ctx context.Context, in *pageInput) (*struct{ Body tripPage }, error) {

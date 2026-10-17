@@ -104,6 +104,18 @@ type CreateParams struct {
 	Capacity           int
 }
 
+// UpdateParams changes only the non-nil fields; the result must pass the same rules as a new trip.
+type UpdateParams struct {
+	Title              *string
+	Description        *string
+	DestinationCity    *string
+	DestinationCountry *string
+	DepartsOn          *time.Time
+	ReturnsOn          *time.Time
+	RequestDeadline    *time.Time
+	Capacity           *int
+}
+
 type ListParams struct {
 	City string
 	// From and To filter departure dates, inclusive.
@@ -124,6 +136,8 @@ type Service interface {
 	BySlug(ctx context.Context, slug string) (Trip, error)
 	ByID(ctx context.Context, id uuid.UUID) (Trip, error)
 	Close(ctx context.Context, jastiperID, id uuid.UUID) (Trip, error)
+	// Update edits an open trip; capacity cannot drop below the reserved items. The slug does not change.
+	Update(ctx context.Context, jastiperID, id uuid.UUID, p UpdateParams) (Trip, error)
 	// Reserve takes units of capacity under a row lock: ErrTripClosed unless the trip accepts requests,
 	// ErrCapacityFull when fewer units remain.
 	Reserve(ctx context.Context, tripID uuid.UUID, units int) error
@@ -174,19 +188,8 @@ func (s *service) Create(ctx context.Context, jastiperID uuid.UUID, p CreatePara
 		Capacity:           p.Capacity,
 		Status:             StatusOpen,
 	}
-	switch {
-	case t.Title == "":
-		return Trip{}, &InputError{Detail: "Title must not be blank."}
-	case t.DestinationCity == "":
-		return Trip{}, &InputError{Detail: "Destination city must not be blank."}
-	case t.ReturnsOn.Before(t.DepartsOn):
-		return Trip{}, &InputError{Detail: "Return date must not be before the departure date."}
-	case !t.RequestDeadline.After(s.now()):
-		return Trip{}, &InputError{Detail: "Request deadline must be in the future."}
-	case !t.RequestDeadline.Before(t.ReturnsOn.AddDate(0, 0, 1)):
-		return Trip{}, &InputError{Detail: "Request deadline must not be after the return date."}
-	case t.Capacity < 1:
-		return Trip{}, &InputError{Detail: "Capacity must be at least 1."}
+	if err := s.validate(t); err != nil {
+		return Trip{}, err
 	}
 
 	for range 3 {
@@ -268,6 +271,69 @@ func (s *service) Close(ctx context.Context, jastiperID, id uuid.UUID) (Trip, er
 	}
 	t.Status = StatusClosed
 	return t, nil
+}
+
+func (s *service) Update(ctx context.Context, jastiperID, id uuid.UUID, p UpdateParams) (Trip, error) {
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		t, err := s.repo.Lock(ctx, id)
+		if err != nil {
+			return err
+		}
+		if t.JastiperID != jastiperID {
+			return ErrNotFound
+		}
+		if t.Status != StatusOpen {
+			return ErrNotOpen
+		}
+		set := func(dst *string, src *string) {
+			if src != nil {
+				*dst = strings.TrimSpace(*src)
+			}
+		}
+		set(&t.Title, p.Title)
+		set(&t.Description, p.Description)
+		set(&t.DestinationCity, p.DestinationCity)
+		if p.DestinationCountry != nil {
+			t.DestinationCountry = strings.ToUpper(strings.TrimSpace(*p.DestinationCountry))
+		}
+		for dst, src := range map[*time.Time]*time.Time{&t.DepartsOn: p.DepartsOn, &t.ReturnsOn: p.ReturnsOn, &t.RequestDeadline: p.RequestDeadline} {
+			if src != nil {
+				*dst = *src
+			}
+		}
+		if p.Capacity != nil {
+			t.Capacity = *p.Capacity
+		}
+		if err := s.validate(t); err != nil {
+			return err
+		}
+		if t.Capacity < t.ReservedCapacity {
+			return &InputError{Detail: fmt.Sprintf("Capacity must not be lower than the %d items already reserved.", t.ReservedCapacity)}
+		}
+		return s.repo.UpdateTrip(ctx, t)
+	})
+	if err != nil {
+		return Trip{}, err
+	}
+	return s.repo.TripByID(ctx, id)
+}
+
+func (s *service) validate(t Trip) error {
+	switch {
+	case t.Title == "":
+		return &InputError{Detail: "Title must not be blank."}
+	case t.DestinationCity == "":
+		return &InputError{Detail: "Destination city must not be blank."}
+	case t.ReturnsOn.Before(t.DepartsOn):
+		return &InputError{Detail: "Return date must not be before the departure date."}
+	case !t.RequestDeadline.After(s.now()):
+		return &InputError{Detail: "Request deadline must be in the future."}
+	case !t.RequestDeadline.Before(t.ReturnsOn.AddDate(0, 0, 1)):
+		return &InputError{Detail: "Request deadline must not be after the return date."}
+	case t.Capacity < 1:
+		return &InputError{Detail: "Capacity must be at least 1."}
+	}
+	return nil
 }
 
 func (s *service) Reserve(ctx context.Context, tripID uuid.UUID, units int) error {

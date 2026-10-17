@@ -179,3 +179,37 @@ func TestCatalogEndpoints(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdateTripEndpoint(t *testing.T) {
+	app := newTestApp(t)
+	_, created := do(t, app, http.MethodPost, "/trips", "jastiper", createBody)
+	path := "/trips/" + created["id"].(string)
+
+	status, body := do(t, app, http.MethodPatch, path, "jastiper", `{"title":"Jastip Osaka","capacity":12,"returnsOn":"2026-10-21"}`)
+	if status != http.StatusOK || body["title"] != "Jastip Osaka" || body["capacity"] != float64(12) || body["returnsOn"] != "2026-10-21" || body["slug"] != created["slug"] {
+		t.Fatalf("PATCH status = %d, body = %v", status, body)
+	}
+	tests := []struct {
+		name, token, body string
+		want              int
+	}{
+		{"as buyer", "buyer", `{"title":"X"}`, http.StatusForbidden},
+		{"bad date", "jastiper", `{"departsOn":"10/10/2026"}`, http.StatusUnprocessableEntity},
+		{"capacity zero", "jastiper", `{"capacity":0}`, http.StatusUnprocessableEntity},
+		{"returns before departs", "jastiper", `{"returnsOn":"2026-10-01"}`, http.StatusUnprocessableEntity},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if status, body := do(t, app, http.MethodPatch, path, tt.token, tt.body); status != tt.want {
+				t.Errorf("status = %d, want %d (body %v)", status, tt.want, body)
+			}
+		})
+	}
+	if status, _ := do(t, app, http.MethodPatch, "/trips/"+uuid.NewString(), "jastiper", `{"title":"X"}`); status != http.StatusNotFound {
+		t.Errorf("PATCH unknown trip status = %d, want 404", status)
+	}
+	do(t, app, http.MethodPost, path+"/close", "jastiper", "")
+	if status, _ := do(t, app, http.MethodPatch, path, "jastiper", `{"title":"X"}`); status != http.StatusConflict {
+		t.Errorf("PATCH closed trip status = %d, want 409", status)
+	}
+}
