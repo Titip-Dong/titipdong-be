@@ -71,6 +71,9 @@ func run(cfg config.Config) error {
 	if len(os.Args) > 1 && os.Args[1] == "seed-demo" {
 		return seedDemo(ctx, pool)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "create-admin" {
+		return createAdmin(ctx, pool, os.Args[2:])
+	}
 
 	store, err := blobStore(ctx, cfg)
 	if err != nil {

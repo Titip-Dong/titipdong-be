@@ -150,8 +150,11 @@ is incorrect.`, `422` validation.
 ### CLI: `create-admin`
 
 ```sh
-go run ./cmd/api create-admin -name "Admin" -email admin@example.com   # password read from ADMIN_PASSWORD
+ADMIN_PASSWORD='…' go run ./cmd/api create-admin -name "Admin" -email admin@example.com
 ```
+
+Applies pending migrations first, like the server. The password (8–128 characters) comes from `ADMIN_PASSWORD` so it
+stays out of the shell history and the process list; an email already registered is refused.
 
 ### `POST /auth/register`
 
@@ -356,9 +359,9 @@ Done:
 - [x] `SetStatus(ctx, userID, status)` for F08: refuses admins (`ErrAdminStatus`), revokes refresh tokens on suspend.
 - [x] `PATCH /me` (name, phone, password change with the current password; a password change revokes all refresh
       tokens).
+- [x] `api create-admin` CLI command.
 
 Remaining:
 
-- [ ] `api create-admin` CLI command.
 - [ ] UUIDv7 for new users and refresh tokens (currently v4).
 - [ ] Job `auth.purge_tokens` deleting expired refresh tokens.
