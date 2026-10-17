@@ -17,6 +17,7 @@ type fakeRepository struct {
 	mu        sync.Mutex
 	users     map[uuid.UUID]newUser
 	suspended map[uuid.UUID]bool
+	phones    map[uuid.UUID]string
 	tokens    map[string]refreshToken
 	now       time.Time
 }
@@ -25,6 +26,7 @@ func newFakeRepository() *fakeRepository {
 	return &fakeRepository{
 		users:     map[uuid.UUID]newUser{},
 		suspended: map[uuid.UUID]bool{},
+		phones:    map[uuid.UUID]string{},
 		tokens:    map[string]refreshToken{},
 		now:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
@@ -71,6 +73,36 @@ func (r *fakeRepository) SetUserStatus(_ context.Context, id uuid.UUID, status S
 		return User{}, ErrUserNotFound
 	}
 	r.suspended[id] = status == StatusSuspended
+	return r.toUser(u), nil
+}
+
+func (r *fakeRepository) PasswordHash(_ context.Context, id uuid.UUID) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.users[id]
+	if !ok {
+		return "", ErrUserNotFound
+	}
+	return u.PasswordHash, nil
+}
+
+func (r *fakeRepository) UpdateUser(_ context.Context, id uuid.UUID, upd userUpdate) (User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.users[id]
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+	if upd.Name != nil {
+		u.Name = *upd.Name
+	}
+	if upd.Phone != nil {
+		r.phones[id] = *upd.Phone
+	}
+	if upd.PasswordHash != nil {
+		u.PasswordHash = *upd.PasswordHash
+	}
+	r.users[id] = u
 	return r.toUser(u), nil
 }
 
@@ -147,7 +179,7 @@ func (r *fakeRepository) toUser(u newUser) User {
 	if r.suspended[u.ID] {
 		status = StatusSuspended
 	}
-	return User{ID: u.ID, Name: u.Name, Email: u.Email, Role: u.Role, Status: status, CreatedAt: r.now}
+	return User{ID: u.ID, Name: u.Name, Email: u.Email, Role: u.Role, Status: status, Phone: r.phones[u.ID], CreatedAt: r.now}
 }
 
 const testSecret = "test-secret-that-is-at-least-32-bytes"
@@ -401,5 +433,48 @@ func TestSetStatus(t *testing.T) {
 	var inputErr *InputError
 	if _, err := svc.SetStatus(ctx, sess.User.ID, "banned"); !errors.As(err, &inputErr) {
 		t.Errorf("SetStatus(banned) error = %v, want *InputError", err)
+	}
+}
+
+func TestUpdateProfile(t *testing.T) {
+	repo := newFakeRepository()
+	svc := newService(repo, newTokens([]byte(testSecret), accessTokenLifetime, func() time.Time { return repo.now }))
+	ctx := t.Context()
+	sess, err := svc.Register(ctx, RegisterParams{Name: "Budi", Email: "budi@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.User.ID
+	ptr := func(s string) *string { return &s }
+
+	u, err := svc.UpdateProfile(ctx, id, UpdateParams{Name: ptr("  Budi S. "), Phone: ptr("08123456789")})
+	if err != nil || u.Name != "Budi S." || u.Phone != "08123456789" {
+		t.Fatalf("UpdateProfile(name, phone) = %+v, %v", u, err)
+	}
+	if u, _ := svc.UpdateProfile(ctx, id, UpdateParams{Phone: ptr("")}); u.Phone != "" || u.Name != "Budi S." {
+		t.Errorf("clearing phone = %+v, want empty phone and the name kept", u)
+	}
+	var inputErr *InputError
+	if _, err := svc.UpdateProfile(ctx, id, UpdateParams{Name: ptr("   ")}); !errors.As(err, &inputErr) {
+		t.Errorf("UpdateProfile(blank name) error = %v, want *InputError", err)
+	}
+	if _, err := svc.UpdateProfile(ctx, id, UpdateParams{NewPassword: "lebihrahasia456"}); !errors.As(err, &inputErr) {
+		t.Errorf("UpdateProfile(new password alone) error = %v, want *InputError", err)
+	}
+	if _, err := svc.UpdateProfile(ctx, id, UpdateParams{CurrentPassword: "salah", NewPassword: "lebihrahasia456"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("UpdateProfile(wrong current) error = %v, want ErrInvalidCredentials", err)
+	}
+
+	if _, err := svc.UpdateProfile(ctx, id, UpdateParams{CurrentPassword: "rahasia123", NewPassword: "lebihrahasia456"}); err != nil {
+		t.Fatalf("UpdateProfile(password) error = %v", err)
+	}
+	if _, err := svc.Refresh(ctx, sess.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh after password change error = %v, want ErrInvalidRefreshToken", err)
+	}
+	if _, err := svc.Login(ctx, "budi@example.com", "rahasia123"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("Login(old password) error = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Login(ctx, "budi@example.com", "lebihrahasia456"); err != nil {
+		t.Errorf("Login(new password) error = %v", err)
 	}
 }

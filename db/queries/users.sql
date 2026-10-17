@@ -23,3 +23,16 @@ UPDATE users
 SET status = sqlc.arg(status)::text, updated_at = now()
 WHERE id = sqlc.arg(id)
 RETURNING id, name, email, role, status, phone, created_at;
+
+-- name: GetUserPasswordHash :one
+SELECT password_hash FROM users
+WHERE id = $1;
+
+-- name: UpdateUser :one
+UPDATE users
+SET name          = COALESCE(sqlc.narg(name), name),
+    phone         = CASE WHEN sqlc.arg(set_phone)::bool THEN NULLIF(sqlc.arg(phone)::text, '') ELSE phone END,
+    password_hash = COALESCE(sqlc.narg(password_hash), password_hash),
+    updated_at    = now()
+WHERE id = sqlc.arg(id)
+RETURNING id, name, email, role, status, phone, created_at;

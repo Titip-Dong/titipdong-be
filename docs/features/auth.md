@@ -126,7 +126,7 @@ refresh_tokens |o--o| refresh_tokens : replaced_by
 | `GET`   | `/me`            | `getCurrentUser` | Any role        | Done    | Profile of the caller                          |
 | `POST`  | `/auth/refresh`  | `refreshSession` | Refresh cookie  | Done    | Rotate the refresh token, return a new access token |
 | `POST`  | `/auth/logout`   | `logout`         | Refresh cookie  | Done    | Revoke the refresh token family, clear the cookie |
-| `PATCH` | `/me`            | `updateCurrentUser` | Any role     | To do   | Update name, phone, or password                |
+| `PATCH` | `/me`            | `updateCurrentUser` | Any role     | Done    | Update name, phone, or password                |
 
 ### Service methods for other modules
 
@@ -143,8 +143,9 @@ Request (`UpdateUserRequest`), every field optional:
 { "name": "Budi S.", "phone": "08123456789", "currentPassword": "rahasia123", "newPassword": "lebihrahasia456" }
 ```
 
-`newPassword` requires `currentPassword`. Response `200` (`UserResponse`). Errors: `401` wrong current password,
-`422` validation.
+`name` 1–100 (trimmed, not blank); `phone` up to 20 characters matching `^\+?[0-9]*$`, an empty string clears it;
+`newPassword` 8–128 and requires `currentPassword`. Response `200` (`UserResponse`). Errors: `401` `Current password
+is incorrect.`, `422` validation.
 
 ### CLI: `create-admin`
 
@@ -353,11 +354,11 @@ Done:
 - [x] `cmd/api seed-demo` for demo accounts.
 - [x] Migration adding `users.status`, `phone`, `updated_at`; login and refresh reject suspended users.
 - [x] `SetStatus(ctx, userID, status)` for F08: refuses admins (`ErrAdminStatus`), revokes refresh tokens on suspend.
+- [x] `PATCH /me` (name, phone, password change with the current password; a password change revokes all refresh
+      tokens).
 
 Remaining:
 
-- [ ] `PATCH /me` (name, phone, password change with the current password; a password change revokes all refresh
-      tokens).
 - [ ] `api create-admin` CLI command.
 - [ ] UUIDv7 for new users and refresh tokens (currently v4).
 - [ ] Job `auth.purge_tokens` deleting expired refresh tokens.

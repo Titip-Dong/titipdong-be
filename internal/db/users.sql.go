@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createUser = `-- name: CreateUser :one
@@ -121,6 +122,18 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow
 	return i, err
 }
 
+const getUserPasswordHash = `-- name: GetUserPasswordHash :one
+SELECT password_hash FROM users
+WHERE id = $1
+`
+
+func (q *Queries) GetUserPasswordHash(ctx context.Context, id uuid.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getUserPasswordHash, id)
+	var password_hash string
+	err := row.Scan(&password_hash)
+	return password_hash, err
+}
+
 const listAdminIDs = `-- name: ListAdminIDs :many
 SELECT id FROM users
 WHERE role = 'admin'
@@ -172,6 +185,55 @@ type SetUserStatusRow struct {
 func (q *Queries) SetUserStatus(ctx context.Context, arg SetUserStatusParams) (SetUserStatusRow, error) {
 	row := q.db.QueryRow(ctx, setUserStatus, arg.Status, arg.ID)
 	var i SetUserStatusRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.Role,
+		&i.Status,
+		&i.Phone,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const updateUser = `-- name: UpdateUser :one
+UPDATE users
+SET name          = COALESCE($1, name),
+    phone         = CASE WHEN $2::bool THEN NULLIF($3::text, '') ELSE phone END,
+    password_hash = COALESCE($4, password_hash),
+    updated_at    = now()
+WHERE id = $5
+RETURNING id, name, email, role, status, phone, created_at
+`
+
+type UpdateUserParams struct {
+	Name         pgtype.Text
+	SetPhone     bool
+	Phone        string
+	PasswordHash *string
+	ID           uuid.UUID
+}
+
+type UpdateUserRow struct {
+	ID        uuid.UUID
+	Name      string
+	Email     string
+	Role      string
+	Status    string
+	Phone     *string
+	CreatedAt time.Time
+}
+
+func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (UpdateUserRow, error) {
+	row := q.db.QueryRow(ctx, updateUser,
+		arg.Name,
+		arg.SetPhone,
+		arg.Phone,
+		arg.PasswordHash,
+		arg.ID,
+	)
+	var i UpdateUserRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,

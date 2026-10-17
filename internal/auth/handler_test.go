@@ -180,3 +180,31 @@ func TestRefreshCookieFlow(t *testing.T) {
 		t.Errorf("refresh without cookie status = %d, want 401", res.StatusCode)
 	}
 }
+
+func TestUpdateCurrentUser(t *testing.T) {
+	app := newTestApp(t)
+	_, body := do(t, app, http.MethodPost, "/auth/register", "", `{"name":"Budi","email":"budi@example.com","password":"rahasia123","role":"buyer"}`)
+	token, _ := body["accessToken"].(string)
+
+	status, body := do(t, app, http.MethodPatch, "/me", token, `{"name":"Budi S.","phone":"+628123456789"}`)
+	if status != http.StatusOK || body["name"] != "Budi S." || body["phone"] != "+628123456789" || body["status"] != "active" {
+		t.Fatalf("PATCH /me status = %d, body = %v", status, body)
+	}
+	tests := []struct {
+		name, token, body string
+		want              int
+	}{
+		{"without token", "", `{"name":"X"}`, http.StatusUnauthorized},
+		{"bad phone", token, `{"phone":"0812-ABC"}`, http.StatusUnprocessableEntity},
+		{"short new password", token, `{"currentPassword":"rahasia123","newPassword":"short"}`, http.StatusUnprocessableEntity},
+		{"new password alone", token, `{"newPassword":"lebihrahasia456"}`, http.StatusUnprocessableEntity},
+		{"wrong current password", token, `{"currentPassword":"salah123","newPassword":"lebihrahasia456"}`, http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if status, body := do(t, app, http.MethodPatch, "/me", tt.token, tt.body); status != tt.want {
+				t.Errorf("status = %d, want %d (body %v)", status, tt.want, body)
+			}
+		})
+	}
+}

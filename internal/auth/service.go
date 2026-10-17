@@ -82,6 +82,14 @@ type Session struct {
 	User         User
 }
 
+// UpdateParams changes only the fields that are set. NewPassword requires CurrentPassword.
+type UpdateParams struct {
+	Name            *string
+	Phone           *string
+	CurrentPassword string
+	NewPassword     string
+}
+
 type RegisterParams struct {
 	Name     string
 	Email    string
@@ -96,6 +104,9 @@ type Service interface {
 	Refresh(ctx context.Context, refreshToken string) (Session, error)
 	Logout(ctx context.Context, refreshToken string) error
 	User(ctx context.Context, id uuid.UUID) (User, error)
+	// UpdateProfile returns ErrInvalidCredentials for a wrong current password; a password change revokes every
+	// refresh token.
+	UpdateProfile(ctx context.Context, id uuid.UUID, p UpdateParams) (User, error)
 	Authenticate(ctx context.Context, accessToken string) (Principal, error)
 	// SetStatus suspends or reactivates a buyer or jastiper; suspending revokes every refresh token.
 	SetStatus(ctx context.Context, userID uuid.UUID, status Status) (User, error)
@@ -243,6 +254,48 @@ func (s *service) Logout(ctx context.Context, refreshToken string) error {
 
 func (s *service) User(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.repo.UserByID(ctx, id)
+}
+
+func (s *service) UpdateProfile(ctx context.Context, id uuid.UUID, p UpdateParams) (User, error) {
+	var upd userUpdate
+	if p.Name != nil {
+		name := strings.TrimSpace(*p.Name)
+		if name == "" {
+			return User{}, &InputError{Detail: "Name must not be blank."}
+		}
+		upd.Name = &name
+	}
+	if p.Phone != nil {
+		phone := strings.TrimSpace(*p.Phone)
+		upd.Phone = &phone
+	}
+	if p.NewPassword != "" && p.CurrentPassword == "" {
+		return User{}, &InputError{Detail: "Enter your current password to set a new one."}
+	}
+	var u User
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		if p.NewPassword != "" {
+			hash, err := s.repo.PasswordHash(ctx, id)
+			if err != nil {
+				return err
+			}
+			if !verifyPassword(hash, p.CurrentPassword) {
+				return ErrInvalidCredentials
+			}
+			newHash, err := hashPassword(p.NewPassword)
+			if err != nil {
+				return fmt.Errorf("hash password: %w", err)
+			}
+			upd.PasswordHash = &newHash
+			if err := s.repo.RevokeUserRefreshTokens(ctx, id, s.tokens.now()); err != nil {
+				return err
+			}
+		}
+		var err error
+		u, err = s.repo.UpdateUser(ctx, id, upd)
+		return err
+	})
+	return u, err
 }
 
 func (s *service) SetStatus(ctx context.Context, userID uuid.UUID, status Status) (User, error) {
