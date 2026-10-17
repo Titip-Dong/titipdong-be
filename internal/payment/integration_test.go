@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -714,5 +715,87 @@ func TestWallet(t *testing.T) {
 	}
 	if _, err := f.svc.WalletEntries(ctx, f.jastiper, 20, "garbage!"); !errors.Is(err, pagination.ErrInvalidCursor) {
 		t.Errorf("WalletEntries(bad cursor) error = %v", err)
+	}
+}
+
+// TestConcurrentReleaseAndRefund races dispute refunds against releases of one disputed order: exactly one may move
+// the escrow, and the ledger must show only that one.
+func TestConcurrentReleaseAndRefund(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.paidOrder(t, 1, 100_000, 0)
+	if _, err := f.orders.MarkShipped(ctx, f.jastiper, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.orders.MarkDisputed(ctx, f.buyer, o.ID, "Rusak"); err != nil {
+		t.Fatal(err)
+	}
+	admin := order.Actor{ID: f.admin(t), Type: order.ActorAdmin}
+	before, _ := f.svc.JastiperBalance(ctx, f.jastiper)
+
+	const each = 6
+	type outcome struct {
+		refund bool
+		err    error
+	}
+	var wg sync.WaitGroup
+	results := make(chan outcome, 2*each)
+	for range each {
+		wg.Go(func() {
+			_, err := f.svc.Refund(ctx, admin, o.ID, RefundDispute, "Barang rusak")
+			results <- outcome{refund: true, err: err}
+		})
+		wg.Go(func() {
+			err := database.WithTx(ctx, f.pool, func(ctx context.Context) error {
+				if _, err := f.orders.MarkDelivered(ctx, admin, o.ID); err != nil {
+					return err
+				}
+				_, err := f.svc.Release(ctx, admin, o.ID)
+				return err
+			})
+			results <- outcome{err: err}
+		})
+	}
+	wg.Wait()
+	close(results)
+
+	var won []outcome
+	for r := range results {
+		switch {
+		case r.err == nil:
+			won = append(won, r)
+		case !errors.Is(r.err, order.ErrInvalidTransition):
+			t.Errorf("unexpected error = %v", r.err)
+		}
+	}
+	if len(won) != 1 {
+		t.Fatalf("successful decisions = %d, want exactly 1", len(won))
+	}
+
+	var kinds []string
+	rows, err := f.pool.Query(ctx, `SELECT kind FROM ledger_transactions WHERE order_id = $1 ORDER BY created_at, kind`, o.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		kinds = append(kinds, k)
+	}
+	rows.Close()
+	after, _ := f.svc.JastiperBalance(ctx, f.jastiper)
+	got, _, _ := f.orders.Get(ctx, admin, o.ID)
+	if f.escrow(t, o.ID) != 0 {
+		t.Errorf("escrow = %d, want 0", f.escrow(t, o.ID))
+	}
+	if won[0].refund {
+		if got.Status != order.StatusRefunded || after != before || !slices.Equal(kinds, []string{"payment_received", "refund", "refund_paid"}) {
+			t.Errorf("refund won: status %s, jastiper +%d, postings %v", got.Status, after-before, kinds)
+		}
+		f.assertSettled(t, o.ID)
+	} else if got.Status != order.StatusReleased || after-before != 95_000 || !slices.Equal(kinds, []string{"payment_received", "release"}) {
+		t.Errorf("release won: status %s, jastiper +%d, postings %v", got.Status, after-before, kinds)
 	}
 }

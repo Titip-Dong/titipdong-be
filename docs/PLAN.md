@@ -24,7 +24,7 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | F01 Auth & User          | Done                                                                                               |
 | F02 Trip & Catalog       | Done                                                                                               |
 | F03 Order                | Done |
-| F04 Payment & Escrow     | Partial. All endpoints done; concurrent release/refund integration test to do                       |
+| F04 Payment & Escrow     | Done |
 | F05 Shipment             | Done                                                                                               |
 | F06 Dispute              | Done                                                                                               |
 | F07 Notification         | Done                                                                                               |

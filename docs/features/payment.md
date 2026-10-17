@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------------- |
 | Package | `internal/payment`                                                                 |
 | Tag     | `payment`                                                                          |
-| Status  | Partial: all endpoints done; concurrent release/refund integration test to do |
+| Status  | Done |
 
 ## Overview
 
@@ -417,7 +417,4 @@ Done:
 - [x] `PlatformTotals` ledger summary for F08 stats.
 - [x] `GET /wallet` with `available`, `inEscrow`, `pendingPayout`; `GET /wallet/transactions`.
 - [x] Integration tests: ledger balance, checkout after the deadline, payment → release.
-
-Remaining:
-
-- [ ] Integration test: concurrent release and refund on one order (refund and payout postings are covered).
+- [x] Integration test: concurrent release and refund on one disputed order; only the winner posts to the ledger.
