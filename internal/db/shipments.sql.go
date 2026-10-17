@@ -60,6 +60,42 @@ func (q *Queries) GetShipment(ctx context.Context, orderID uuid.UUID) (Shipment,
 	return i, err
 }
 
+const listShipmentsDueForRelease = `-- name: ListShipmentsDueForRelease :many
+SELECT s.order_id
+FROM shipments s
+JOIN orders o ON o.id = s.order_id
+WHERE s.delivered_at IS NULL
+  AND s.shipped_at <= $1::timestamptz
+  AND o.status = 'shipped'
+ORDER BY s.shipped_at, s.order_id
+LIMIT $2
+`
+
+type ListShipmentsDueForReleaseParams struct {
+	Cutoff   time.Time
+	RowLimit int32
+}
+
+func (q *Queries) ListShipmentsDueForRelease(ctx context.Context, arg ListShipmentsDueForReleaseParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listShipmentsDueForRelease, arg.Cutoff, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var order_id uuid.UUID
+		if err := rows.Scan(&order_id); err != nil {
+			return nil, err
+		}
+		items = append(items, order_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markShipmentDelivered = `-- name: MarkShipmentDelivered :exec
 UPDATE shipments
 SET delivered_at = $2::timestamptz, updated_at = now()

@@ -5,6 +5,7 @@ package shipment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -20,6 +21,11 @@ type Method string
 const (
 	MethodCOD     Method = "cod"
 	MethodCourier Method = "courier"
+)
+
+const (
+	autoReleaseAfter = 7 * 24 * time.Hour
+	autoReleaseBatch = 100
 )
 
 var ErrNotFound = errors.New("shipment not found")
@@ -41,6 +47,8 @@ type Shipment struct {
 	HandoverNote   string
 	ShippedAt      time.Time
 	DeliveredAt    *time.Time
+	// AutoReleaseAt is set while the order is shipped: funds release then unless the buyer confirms or disputes.
+	AutoReleaseAt *time.Time
 }
 
 type ShipParams struct {
@@ -54,6 +62,8 @@ type Service interface {
 	Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p ShipParams) (Shipment, error)
 	Get(ctx context.Context, actor order.Actor, orderID uuid.UUID) (Shipment, error)
 	ConfirmReceipt(ctx context.Context, buyerID, orderID uuid.UUID) (Shipment, error)
+	// AutoRelease delivers and releases orders shipped more than 7 days ago without confirmation or dispute.
+	AutoRelease(ctx context.Context) error
 }
 
 func NewService(pool *pgxpool.Pool, orders order.Service, payments payment.Service, notifier notification.Service) Service {
@@ -98,6 +108,7 @@ func (s *service) Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p Shi
 			return err
 		}
 		sh.OrderStatus = o.Status
+		sh.AutoReleaseAt = autoReleaseAt(sh)
 		if err := s.repo.Create(ctx, sh); err != nil {
 			return err
 		}
@@ -122,17 +133,40 @@ func (s *service) Get(ctx context.Context, actor order.Actor, orderID uuid.UUID)
 		return Shipment{}, err
 	}
 	sh.OrderStatus = o.Status
+	sh.AutoReleaseAt = autoReleaseAt(sh)
 	return sh, nil
 }
 
 func (s *service) ConfirmReceipt(ctx context.Context, buyerID, orderID uuid.UUID) (Shipment, error) {
+	return s.deliver(ctx, order.Actor{ID: buyerID, Type: order.ActorBuyer}, orderID)
+}
+
+func (s *service) AutoRelease(ctx context.Context) error {
+	due, err := s.repo.DueForRelease(ctx, s.now().Add(-autoReleaseAfter), autoReleaseBatch)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, orderID := range due {
+		_, err := s.deliver(ctx, order.System, orderID)
+		switch {
+		case errors.Is(err, order.ErrInvalidTransition):
+			// Confirmed or disputed since the sweep read it.
+		case err != nil:
+			errs = append(errs, fmt.Errorf("auto-release order %s: %w", orderID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// deliver marks the order and shipment delivered and releases the escrow, in one transaction.
+func (s *service) deliver(ctx context.Context, actor order.Actor, orderID uuid.UUID) (Shipment, error) {
 	var sh Shipment
 	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
-		if _, err := s.orders.MarkDelivered(ctx, order.Actor{ID: buyerID, Type: order.ActorBuyer}, orderID); err != nil {
+		if _, err := s.orders.MarkDelivered(ctx, actor, orderID); err != nil {
 			return err
 		}
-		deliveredAt := s.now()
-		if err := s.repo.MarkDelivered(ctx, orderID, deliveredAt); err != nil {
+		if err := s.repo.MarkDelivered(ctx, orderID, s.now()); err != nil {
 			return err
 		}
 		o, err := s.payments.Release(ctx, orderID)
@@ -144,4 +178,12 @@ func (s *service) ConfirmReceipt(ctx context.Context, buyerID, orderID uuid.UUID
 		return err
 	})
 	return sh, err
+}
+
+func autoReleaseAt(sh Shipment) *time.Time {
+	if sh.OrderStatus != order.StatusShipped || sh.DeliveredAt != nil {
+		return nil
+	}
+	at := sh.ShippedAt.Add(autoReleaseAfter)
+	return &at
 }
