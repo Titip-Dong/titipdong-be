@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------- |
 | Package | `internal/order`                                                             |
 | Tag     | `order`                                                                      |
-| Status  | Partial: all endpoints done; concurrency integration test to do                          |
+| Status  | Done |
 
 ## Overview
 
@@ -316,7 +316,4 @@ Done:
 - [x] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
 - [x] Job `orders.expire_unpaid` (every minute, up to 100 orders a run, one transaction each); `listOrders` runs the
       same sweep and `getOrder` expires the order it reads.
-
-Remaining:
-
-- [ ] Integration test for concurrent transitions on the same order.
+- [x] Integration test for concurrent transitions on the same order (approve against reject).
