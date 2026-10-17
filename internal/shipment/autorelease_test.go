@@ -41,7 +41,7 @@ func TestAutoRelease(t *testing.T) {
 		return u.ID
 	}
 	buyer, jastiper := user(auth.RoleBuyer), user(auth.RoleJastiper)
-	trips := trip.NewService(pool)
+	trips := trip.NewService(pool, nil)
 	notifier := notification.NewService(pool)
 	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
 	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})

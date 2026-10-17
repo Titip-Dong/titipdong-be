@@ -216,6 +216,18 @@ type Trip struct {
 	ReservedCapacity   int32
 }
 
+type TripItem struct {
+	ID             uuid.UUID
+	TripID         uuid.UUID
+	Name           string
+	Description    *string
+	PhotoKey       *string
+	ReferencePrice *int64
+	Position       int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type Upload struct {
 	ID          uuid.UUID
 	OwnerID     uuid.UUID

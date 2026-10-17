@@ -8,6 +8,7 @@ import (
 
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 )
@@ -17,12 +18,18 @@ const (
 	dateLayout = "2006-01-02"
 )
 
-type Handler struct {
-	svc Service
+// photoSigner turns a stored blob key into a short-lived read URL.
+type photoSigner interface {
+	ReadURL(key string) string
 }
 
-func NewHandler(svc Service) *Handler {
-	return &Handler{svc: svc}
+type Handler struct {
+	svc    Service
+	photos photoSigner
+}
+
+func NewHandler(svc Service, photos photoSigner) *Handler {
+	return &Handler{svc: svc, photos: photos}
 }
 
 func (h *Handler) RegisterRoutes(api huma.API) {
@@ -65,6 +72,49 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict},
 	}, h.close)
 
+	ownerErrors := []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict,
+		http.StatusUnprocessableEntity, http.StatusServiceUnavailable}
+	huma.Register(api, huma.Operation{
+		OperationID: "listTripItems",
+		Method:      http.MethodGet,
+		Path:        "/trips/{id}/items",
+		Summary:     "List a trip's catalog in display order",
+		Tags:        []string{tag},
+		Errors:      []int{http.StatusNotFound},
+	}, h.listItems)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "createTripItem",
+		Method:        http.MethodPost,
+		Path:          "/trips/{id}/items",
+		Summary:       "Add an item to the trip's catalog",
+		Tags:          []string{tag},
+		Security:      auth.Security(auth.RoleJastiper),
+		DefaultStatus: http.StatusCreated,
+		Errors:        ownerErrors,
+	}, h.createItem)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "updateTripItem",
+		Method:      http.MethodPatch,
+		Path:        "/trips/{id}/items/{itemId}",
+		Summary:     "Edit a catalog item",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors:      ownerErrors,
+	}, h.updateItem)
+
+	huma.Register(api, huma.Operation{
+		OperationID:   "deleteTripItem",
+		Method:        http.MethodDelete,
+		Path:          "/trips/{id}/items/{itemId}",
+		Summary:       "Remove a catalog item",
+		Tags:          []string{tag},
+		Security:      auth.Security(auth.RoleJastiper),
+		DefaultStatus: http.StatusNoContent,
+		Errors:        []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict},
+	}, h.deleteItem)
+
 	huma.Register(api, huma.Operation{
 		OperationID: "listMyTrips",
 		Method:      http.MethodGet,
@@ -103,6 +153,43 @@ type tripResponse struct {
 	AcceptsRequests    bool      `json:"acceptsRequests"`
 	Jastiper           jastiper  `json:"jastiper"`
 	CreatedAt          time.Time `json:"createdAt"`
+}
+
+type itemRequest struct {
+	Name           *string    `json:"name,omitempty" minLength:"1" maxLength:"120"`
+	Description    *string    `json:"description,omitempty" maxLength:"1000"`
+	ReferencePrice *int64     `json:"referencePrice,omitempty" minimum:"0" maximum:"1000000000" doc:"Indicative, whole rupiah"`
+	Position       *int       `json:"position,omitempty" minimum:"0" maximum:"1000" doc:"Display order; defaults to last"`
+	PhotoUpload    *uuid.UUID `json:"photoUploadId,omitempty" doc:"Upload with purpose trip_item_photo; replaces the photo"`
+}
+
+type itemResponse struct {
+	ID             uuid.UUID `json:"id"`
+	Name           string    `json:"name"`
+	Description    string    `json:"description,omitempty"`
+	ReferencePrice *int64    `json:"referencePrice,omitempty"`
+	PhotoURL       string    `json:"photoUrl,omitempty"`
+	Position       int       `json:"position"`
+}
+
+// tripDetailResponse spells out tripResponse's fields: Huma does not flatten embedded structs into the schema.
+type tripDetailResponse struct {
+	ID                 uuid.UUID      `json:"id"`
+	Slug               string         `json:"slug"`
+	Title              string         `json:"title"`
+	Description        string         `json:"description"`
+	DestinationCity    string         `json:"destinationCity"`
+	DestinationCountry string         `json:"destinationCountry"`
+	DepartsOn          string         `json:"departsOn" format:"date"`
+	ReturnsOn          string         `json:"returnsOn" format:"date"`
+	RequestDeadline    time.Time      `json:"requestDeadline"`
+	Capacity           int            `json:"capacity"`
+	RemainingCapacity  int            `json:"remainingCapacity"`
+	Status             string         `json:"status" enum:"open,closed,completed,cancelled"`
+	AcceptsRequests    bool           `json:"acceptsRequests"`
+	Jastiper           jastiper       `json:"jastiper"`
+	CreatedAt          time.Time      `json:"createdAt"`
+	Items              []itemResponse `json:"items"`
 }
 
 type jastiper struct {
@@ -161,12 +248,22 @@ func (h *Handler) list(ctx context.Context, in *struct {
 
 func (h *Handler) get(ctx context.Context, in *struct {
 	Slug string `path:"slug"`
-}) (*tripOutput, error) {
+}) (*struct{ Body tripDetailResponse }, error) {
 	t, err := h.svc.BySlug(ctx, in.Slug)
 	if err != nil {
 		return nil, mapError(err)
 	}
-	return &tripOutput{Body: toTripResponse(t)}, nil
+	items, err := h.svc.Items(ctx, t.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	r := toTripResponse(t)
+	return &struct{ Body tripDetailResponse }{Body: tripDetailResponse{
+		ID: r.ID, Slug: r.Slug, Title: r.Title, Description: r.Description, DestinationCity: r.DestinationCity,
+		DestinationCountry: r.DestinationCountry, DepartsOn: r.DepartsOn, ReturnsOn: r.ReturnsOn,
+		RequestDeadline: r.RequestDeadline, Capacity: r.Capacity, RemainingCapacity: r.RemainingCapacity, Status: r.Status,
+		AcceptsRequests: r.AcceptsRequests, Jastiper: r.Jastiper, CreatedAt: r.CreatedAt, Items: h.toItemResponses(items),
+	}}, nil
 }
 
 func (h *Handler) close(ctx context.Context, in *struct {
@@ -189,6 +286,81 @@ func (h *Handler) listMine(ctx context.Context, in *pageInput) (*struct{ Body tr
 	return &struct{ Body tripPage }{Body: toTripPage(page)}, nil
 }
 
+func (h *Handler) listItems(ctx context.Context, in *struct {
+	ID uuid.UUID `path:"id"`
+}) (*struct {
+	Body struct {
+		Items []itemResponse `json:"items"`
+	}
+}, error) {
+	items, err := h.svc.Items(ctx, in.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	out := &struct {
+		Body struct {
+			Items []itemResponse `json:"items"`
+		}
+	}{}
+	out.Body.Items = h.toItemResponses(items)
+	return out, nil
+}
+
+func (h *Handler) createItem(ctx context.Context, in *struct {
+	ID   uuid.UUID `path:"id"`
+	Body itemRequest
+}) (*struct{ Body itemResponse }, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	it, err := h.svc.AddItem(ctx, p.UserID, in.ID, toItemParams(in.Body))
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &struct{ Body itemResponse }{Body: h.toItemResponse(it)}, nil
+}
+
+func (h *Handler) updateItem(ctx context.Context, in *struct {
+	ID     uuid.UUID `path:"id"`
+	ItemID uuid.UUID `path:"itemId"`
+	Body   itemRequest
+}) (*struct{ Body itemResponse }, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	it, err := h.svc.UpdateItem(ctx, p.UserID, in.ID, in.ItemID, toItemParams(in.Body))
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &struct{ Body itemResponse }{Body: h.toItemResponse(it)}, nil
+}
+
+func (h *Handler) deleteItem(ctx context.Context, in *struct {
+	ID     uuid.UUID `path:"id"`
+	ItemID uuid.UUID `path:"itemId"`
+}) (*struct{}, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	if err := h.svc.DeleteItem(ctx, p.UserID, in.ID, in.ItemID); err != nil {
+		return nil, mapError(err)
+	}
+	return &struct{}{}, nil
+}
+
+func toItemParams(r itemRequest) ItemParams {
+	return ItemParams(r)
+}
+
+func (h *Handler) toItemResponses(items []Item) []itemResponse {
+	out := make([]itemResponse, len(items))
+	for i, it := range items {
+		out[i] = h.toItemResponse(it)
+	}
+	return out
+}
+
+func (h *Handler) toItemResponse(it Item) itemResponse {
+	return itemResponse{
+		ID: it.ID, Name: it.Name, Description: it.Description, ReferencePrice: it.ReferencePrice,
+		PhotoURL: h.photos.ReadURL(it.PhotoKey), Position: it.Position,
+	}
+}
+
 func mapError(err error) error {
 	var inputErr *InputError
 	switch {
@@ -200,8 +372,12 @@ func mapError(err error) error {
 		return huma.Error404NotFound("Trip not found.")
 	case errors.Is(err, ErrNotOpen):
 		return huma.Error409Conflict("Trip is already closed.")
+	case errors.Is(err, ErrItemNotFound):
+		return huma.Error404NotFound("Item not found.")
+	case errors.Is(err, ErrCatalogLocked):
+		return huma.Error409Conflict("The catalog of a completed or cancelled trip cannot change.")
 	}
-	return err
+	return upload.MapError(err)
 }
 
 func toTripPage(p Page) tripPage {

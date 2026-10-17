@@ -38,6 +38,16 @@ type repository interface {
 	CloseExpired(ctx context.Context, now time.Time) (int64, error)
 	// CompleteReturned completes closed trips that returned before today and have no active order.
 	CompleteReturned(ctx context.Context, today time.Time) (int64, error)
+
+	CreateItem(ctx context.Context, it Item) error
+	Items(ctx context.Context, tripID uuid.UUID) ([]Item, error)
+	// Item returns ErrItemNotFound unless the item belongs to the trip.
+	Item(ctx context.Context, tripID, itemID uuid.UUID) (Item, error)
+	// ItemStats returns the trip's item count and the position after the last item.
+	ItemStats(ctx context.Context, tripID uuid.UUID) (count int, nextPosition int, err error)
+	UpdateItem(ctx context.Context, it Item) error
+	// DeleteItem reports false when the item does not belong to the trip.
+	DeleteItem(ctx context.Context, tripID, itemID uuid.UUID) (bool, error)
 }
 
 type pgRepository struct {
@@ -151,6 +161,74 @@ func (r *pgRepository) CloseExpired(ctx context.Context, now time.Time) (int64, 
 
 func (r *pgRepository) CompleteReturned(ctx context.Context, today time.Time) (int64, error) {
 	return r.q(ctx).CompleteReturnedTrips(ctx, today)
+}
+
+func (r *pgRepository) CreateItem(ctx context.Context, it Item) error {
+	return r.q(ctx).CreateTripItem(ctx, db.CreateTripItemParams{
+		ID: it.ID, TripID: it.TripID, Name: it.Name, Description: nonEmpty(it.Description),
+		PhotoKey: nonEmpty(it.PhotoKey), ReferencePrice: it.ReferencePrice, Position: int32(it.Position),
+	})
+}
+
+func (r *pgRepository) Items(ctx context.Context, tripID uuid.UUID) ([]Item, error) {
+	rows, err := r.q(ctx).ListTripItems(ctx, tripID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]Item, len(rows))
+	for i, row := range rows {
+		items[i] = toItem(row)
+	}
+	return items, nil
+}
+
+func (r *pgRepository) Item(ctx context.Context, tripID, itemID uuid.UUID) (Item, error) {
+	row, err := r.q(ctx).GetTripItem(ctx, db.GetTripItemParams{ID: itemID, TripID: tripID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Item{}, ErrItemNotFound
+	}
+	if err != nil {
+		return Item{}, err
+	}
+	return toItem(row), nil
+}
+
+func (r *pgRepository) ItemStats(ctx context.Context, tripID uuid.UUID) (int, int, error) {
+	row, err := r.q(ctx).CountTripItems(ctx, tripID)
+	return int(row.Items), int(row.NextPosition), err
+}
+
+func (r *pgRepository) UpdateItem(ctx context.Context, it Item) error {
+	return r.q(ctx).UpdateTripItem(ctx, db.UpdateTripItemParams{
+		ID: it.ID, TripID: it.TripID, Name: it.Name, Description: nonEmpty(it.Description),
+		PhotoKey: nonEmpty(it.PhotoKey), ReferencePrice: it.ReferencePrice, Position: int32(it.Position),
+	})
+}
+
+func (r *pgRepository) DeleteItem(ctx context.Context, tripID, itemID uuid.UUID) (bool, error) {
+	n, err := r.q(ctx).DeleteTripItem(ctx, db.DeleteTripItemParams{ID: itemID, TripID: tripID})
+	return n == 1, err
+}
+
+func toItem(it db.TripItem) Item {
+	return Item{
+		ID: it.ID, TripID: it.TripID, Name: it.Name, Description: deref(it.Description), PhotoKey: deref(it.PhotoKey),
+		ReferencePrice: it.ReferencePrice, Position: int(it.Position),
+	}
+}
+
+func nonEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func toTrip(t db.Trip, jastiperName string) Trip {

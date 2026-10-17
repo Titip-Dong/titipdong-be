@@ -55,7 +55,7 @@ func newFixture(t *testing.T, now func() time.Time) fixture {
 		}
 		return u.ID
 	}
-	trips := trip.NewService(pool)
+	trips := trip.NewService(pool, nil)
 	notifier := notification.NewService(pool)
 	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
 	return fixture{
@@ -83,7 +83,7 @@ func (f fixture) admin(t *testing.T) uuid.UUID {
 func (f fixture) approvedOrder(t *testing.T, quantity int, itemPrice, fee int64) order.Order {
 	t.Helper()
 	ctx := context.Background()
-	tr, err := trip.NewService(f.pool).Create(ctx, f.jastiper, trip.CreateParams{
+	tr, err := trip.NewService(f.pool, nil).Create(ctx, f.jastiper, trip.CreateParams{
 		Title:              "Jastip Test",
 		DestinationCity:    "Tokyo",
 		DestinationCountry: "JP",
@@ -108,7 +108,7 @@ func (f fixture) approvedOrder(t *testing.T, quantity int, itemPrice, fee int64)
 
 func (f fixture) remainingCapacity(t *testing.T, tripID uuid.UUID) int {
 	t.Helper()
-	tr, err := trip.NewService(f.pool).ByID(context.Background(), tripID)
+	tr, err := trip.NewService(f.pool, nil).ByID(context.Background(), tripID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestOrderCannotOverbookTrip(t *testing.T) {
 	f := newFixture(t, time.Now)
 	ctx := context.Background()
 	o := f.approvedOrder(t, 10, 10_000, 0)
-	tr, err := trip.NewService(f.pool).ByID(ctx, o.TripID)
+	tr, err := trip.NewService(f.pool, nil).ByID(ctx, o.TripID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -656,7 +656,7 @@ func TestOrderPhotoFailureRollsBackReservation(t *testing.T) {
 	f := newFixture(t, time.Now)
 	ctx := context.Background()
 	o := f.approvedOrder(t, 2, 10_000, 0)
-	tr, err := trip.NewService(f.pool).ByID(ctx, o.TripID)
+	tr, err := trip.NewService(f.pool, nil).ByID(ctx, o.TripID)
 	if err != nil {
 		t.Fatal(err)
 	}

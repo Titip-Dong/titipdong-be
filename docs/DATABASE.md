@@ -403,7 +403,7 @@ CREATE INDEX trips_jastiper_idx ON trips (jastiper_id, created_at DESC, id DESC)
 - `open`: accepting requests. `closed`: past the deadline or closed by the jastiper. `completed`: the return date has
   passed and no order is active (set by a job). `cancelled`: the trip will not happen (only without active orders).
 
-### `trip_items` (to add)
+### `trip_items` (exists)
 
 Popular items the jastiper offers on a trip (the catalog shown on the trip page).
 

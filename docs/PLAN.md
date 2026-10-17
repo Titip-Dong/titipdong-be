@@ -22,7 +22,7 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: runtime        | Done. Readiness probe, graceful shutdown, job runner, OpenAPI export, audit log, blob uploads       |
 | Platform: remaining      | To do. CI checks                                                                                    |
 | F01 Auth & User          | Done                                                                                               |
-| F02 Trip & Catalog       | Partial. Create, list, get, close, my trips, capacity done; edit, cancel, catalog to do             |
+| F02 Trip & Catalog       | Partial. Create, list, get, close, my trips, capacity, catalog done; edit, cancel, date filters to do |
 | F03 Order                | Partial. State machine, request, approve, reject, cancel, notifications, capacity done; photo, per-trip inbox to do |
 | F04 Payment & Escrow     | Partial. Fake gateway checkout, ledger, release, refunds, payouts, wallet balance done; wallet history to do |
 | F05 Shipment             | Done                                                                                               |
@@ -88,6 +88,7 @@ Rules:
 2. **Services may call other features' services directly**, one direction only (Go forbids import cycles):
 
    ```
+   trip     → upload
    order    → trip, upload, notification
    trip     → upload
    payment  → order, notification

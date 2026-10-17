@@ -44,7 +44,7 @@ func TestAdminBackOffice(t *testing.T) {
 	buyer, jastiper, adminUser := user(auth.RoleBuyer), user(auth.RoleJastiper), user(auth.RoleAdmin)
 	users := auth.NewService(pool, "test-secret-that-is-at-least-32-bytes")
 	notifier := notification.NewService(pool)
-	trips := trip.NewService(pool)
+	trips := trip.NewService(pool, nil)
 	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
 	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})
 	svc := NewService(pool, users, payments)
