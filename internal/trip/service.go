@@ -101,6 +101,9 @@ type Service interface {
 	Reserve(ctx context.Context, tripID uuid.UUID, units int) error
 	// Release gives units of capacity back, never more than are reserved.
 	Release(ctx context.Context, tripID uuid.UUID, units int) error
+	// CloseExpired backs the trips.close_expired job: open trips past their request deadline close, and closed
+	// trips whose return date (UTC) has passed complete once no order is active.
+	CloseExpired(ctx context.Context) error
 }
 
 func NewService(pool *pgxpool.Pool) Service {
@@ -259,6 +262,22 @@ func (s *service) Release(ctx context.Context, tripID uuid.UUID, units int) erro
 		}
 		return s.repo.AdjustReserved(ctx, tripID, -units)
 	})
+}
+
+func (s *service) CloseExpired(ctx context.Context) error {
+	now := s.now()
+	closed, err := s.repo.CloseExpired(ctx, now)
+	if err != nil {
+		return err
+	}
+	completed, err := s.repo.CompleteReturned(ctx, now.UTC().Truncate(24*time.Hour))
+	if err != nil {
+		return err
+	}
+	if closed+completed > 0 {
+		slog.InfoContext(ctx, "trips_swept", "closed", closed, "completed", completed)
+	}
+	return nil
 }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)

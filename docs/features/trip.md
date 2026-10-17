@@ -26,7 +26,8 @@ the order's transaction, so the dependency stays one-way (`order → trip`).
 - A trip accepts requests when it is `open`, before `request_deadline`, and has remaining capacity.
 - Status:
   - `open` → `closed`: closed by the jastiper, or by the `trips.close_expired` job once `request_deadline` passes.
-  - `closed` → `completed`: set by the same job once `returns_on` has passed and no order is still active.
+  - `closed` → `completed`: set by the same job once `returns_on` has passed (by UTC date) and no order is still
+    active (`requested`, `approved`, `paid`, `shipped`, `delivered`, `disputed`).
   - `open`/`closed` → `cancelled`: by the jastiper, only when the trip has no active order (`requested`, `approved`,
     `paid`, `shipped`, `delivered`, `disputed`).
 - Editing (`PATCH`) is allowed while `open`. `capacity` cannot drop below `reserved_capacity`.
@@ -255,10 +256,11 @@ Done:
 - [x] Migration adding `capacity` / `reserved_capacity`, backfilling `reserved_capacity` from existing active orders.
 - [x] `capacity` in create and responses, `remainingCapacity`; `Reserve` / `Release` under a row lock; integration
       test for concurrent `Reserve`.
+- [x] Job `trips.close_expired` every 5 minutes (`open` → `closed` after the deadline, `closed` → `completed` after the
+      return date with no active order).
 
 Remaining:
 
 - [ ] `from` / `to` filters on `listTrips`.
 - [ ] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.
 - [ ] `trip_items` table and catalog CRUD with photos (`platform/blob`).
-- [ ] Job `trips.close_expired` (`open` → `closed` after the deadline, `closed` → `completed` after the return date).

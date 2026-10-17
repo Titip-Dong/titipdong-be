@@ -44,6 +44,35 @@ func (r *fakeRepository) AdjustReserved(_ context.Context, id uuid.UUID, units i
 	return nil
 }
 
+func (r *fakeRepository) CloseExpired(_ context.Context, now time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int64
+	for id, t := range r.trips {
+		if t.Status == StatusOpen && !t.RequestDeadline.After(now) {
+			t.Status = StatusClosed
+			r.trips[id] = t
+			n++
+		}
+	}
+	return n, nil
+}
+
+// CompleteReturned ignores orders; the integration test covers the active-order rule.
+func (r *fakeRepository) CompleteReturned(_ context.Context, today time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int64
+	for id, t := range r.trips {
+		if t.Status == StatusClosed && t.ReturnsOn.Before(today) {
+			t.Status = StatusCompleted
+			r.trips[id] = t
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (r *fakeRepository) CreateTrip(_ context.Context, t Trip) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -313,5 +342,39 @@ func TestReserveAndRelease(t *testing.T) {
 	}
 	if err := svc.Reserve(ctx, uuid.New(), 1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Reserve(unknown) error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCloseExpired(t *testing.T) {
+	now := testNow
+	repo := newFakeRepository(func() time.Time { return now })
+	svc := newService(repo, func() time.Time { return now })
+	ctx := t.Context()
+	tr, err := svc.Create(ctx, uuid.New(), validParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now = tr.RequestDeadline.Add(-time.Minute)
+	_ = svc.CloseExpired(ctx)
+	if got, _ := svc.ByID(ctx, tr.ID); got.Status != StatusOpen {
+		t.Fatalf("before the deadline status = %s, want open", got.Status)
+	}
+	now = tr.RequestDeadline
+	_ = svc.CloseExpired(ctx)
+	if got, _ := svc.ByID(ctx, tr.ID); got.Status != StatusClosed {
+		t.Fatalf("at the deadline status = %s, want closed", got.Status)
+	}
+	now = tr.ReturnsOn.Add(23 * time.Hour)
+	_ = svc.CloseExpired(ctx)
+	if got, _ := svc.ByID(ctx, tr.ID); got.Status != StatusClosed {
+		t.Fatalf("on the return date status = %s, want closed", got.Status)
+	}
+	now = tr.ReturnsOn.AddDate(0, 0, 1)
+	if err := svc.CloseExpired(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := svc.ByID(ctx, tr.ID); got.Status != StatusCompleted {
+		t.Errorf("the day after returning status = %s, want completed", got.Status)
 	}
 }
