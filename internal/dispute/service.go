@@ -332,7 +332,7 @@ func (s *service) Decide(ctx context.Context, adminID, disputeID uuid.UUID, deci
 			if _, err := s.orders.MarkDelivered(ctx, admin, d.OrderID); err != nil {
 				return err
 			}
-			if _, err := s.payments.Release(ctx, d.OrderID); err != nil {
+			if _, err := s.payments.Release(ctx, admin, d.OrderID); err != nil {
 				return err
 			}
 		}

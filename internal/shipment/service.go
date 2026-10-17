@@ -169,7 +169,7 @@ func (s *service) deliver(ctx context.Context, actor order.Actor, orderID uuid.U
 		if err := s.repo.MarkDelivered(ctx, orderID, s.now()); err != nil {
 			return err
 		}
-		o, err := s.payments.Release(ctx, orderID)
+		o, err := s.payments.Release(ctx, actor, orderID)
 		if err != nil {
 			return err
 		}

@@ -207,7 +207,7 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 		t.Errorf("Checkout(paid) error = %v, want ErrOrderNotPayable", err)
 	}
 
-	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+	if _, err := f.svc.Release(ctx, order.System, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
 		t.Errorf("Release(paid) error = %v, want ErrInvalidTransition", err)
 	}
 	before, _ := f.svc.JastiperBalance(ctx, f.jastiper)
@@ -217,7 +217,8 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 	if _, err := f.orders.MarkDelivered(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	released, err := f.svc.Release(ctx, o.ID)
+	buyerActor := order.Actor{ID: f.buyer, Type: order.ActorBuyer}
+	released, err := f.svc.Release(ctx, buyerActor, o.ID)
 	if err != nil {
 		t.Fatalf("Release() error = %v", err)
 	}
@@ -225,8 +226,16 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 	if released.Status != order.StatusReleased || after-before != 95_001 || f.escrow(t, o.ID) != 0 {
 		t.Errorf("status %s, jastiper +%d, escrow %d; want released, +95001, 0", released.Status, after-before, f.escrow(t, o.ID))
 	}
-	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+	if _, err := f.svc.Release(ctx, order.System, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
 		t.Errorf("Release(again) error = %v, want ErrInvalidTransition", err)
+	}
+	if n := f.auditCount(t, "order.released", o.ID); n != 1 {
+		t.Errorf("order.released audit rows after two release attempts = %d, want 1", n)
+	}
+	var actorType string
+	if err := f.pool.QueryRow(ctx, `SELECT actor_type FROM audit_logs WHERE action = 'order.released' AND target_id = $1`,
+		o.ID.String()).Scan(&actorType); err != nil || actorType != "buyer" {
+		t.Errorf("order.released actor = %q, %v; want buyer", actorType, err)
 	}
 	got := f.notifications(t, f.jastiper, notification.TypeOrderReleased)
 	if len(got) != 1 || got[0].Data["amount"] != float64(95_001) {
@@ -410,7 +419,7 @@ func TestAdminRefundsDisputedOrder(t *testing.T) {
 			t.Errorf("order.refunded for %s = %+v, want one", user, n)
 		}
 	}
-	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+	if _, err := f.svc.Release(ctx, order.System, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
 		t.Errorf("Release(refunded) error = %v, want ErrInvalidTransition", err)
 	}
 }
@@ -457,7 +466,7 @@ func (f fixture) releasedOrder(t *testing.T, itemPrice int64) order.Order {
 	if _, err := f.orders.MarkDelivered(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Release(ctx, o.ID); err != nil {
+	if _, err := f.svc.Release(ctx, order.System, o.ID); err != nil {
 		t.Fatal(err)
 	}
 	return o
