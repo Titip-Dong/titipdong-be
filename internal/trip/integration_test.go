@@ -81,3 +81,66 @@ func TestConcurrentReserveNeverOverbooks(t *testing.T) {
 		t.Errorf("remaining = %d, want 2", got.RemainingCapacity())
 	}
 }
+
+func TestCloseExpiredKeepsTripsWithActiveOrders(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := database.Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := database.Migrate(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	user := func(role auth.Role) uuid.UUID {
+		u, err := auth.Provision(ctx, pool, auth.RegisterParams{
+			Name: string(role), Email: uuid.NewString() + "@test.local", Password: "password123", Role: role,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.ID
+	}
+	jastiper, buyer := user(auth.RoleJastiper), user(auth.RoleBuyer)
+	svc := NewService(pool)
+	newTrip := func() Trip {
+		t.Helper()
+		tr, err := svc.Create(ctx, jastiper, CreateParams{
+			Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",
+			DepartsOn: time.Now().AddDate(0, 0, 1), ReturnsOn: time.Now().AddDate(0, 0, 10),
+			RequestDeadline: time.Now().Add(72 * time.Hour), Capacity: 5,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Move the trip into the past: deadline and return date both passed.
+		_, err = pool.Exec(ctx, `UPDATE trips SET departs_on = current_date - 10, returns_on = current_date - 2,
+			request_deadline = now() - interval '5 days' WHERE id = $1`, tr.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tr
+	}
+	idle, busy := newTrip(), newTrip()
+	_, err = pool.Exec(ctx, `INSERT INTO orders (id, code, trip_id, buyer_id, jastiper_id, product_name, quantity)
+		VALUES ($1, $2, $3, $4, $5, 'Item', 1)`, uuid.New(), "TD-"+uuid.NewString()[:6], busy.ID, buyer, jastiper)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for range 2 {
+		if err := svc.CloseExpired(ctx); err != nil {
+			t.Fatalf("CloseExpired() error = %v", err)
+		}
+	}
+	if got, _ := svc.ByID(ctx, idle.ID); got.Status != StatusCompleted {
+		t.Errorf("trip without orders = %s, want completed", got.Status)
+	}
+	if got, _ := svc.ByID(ctx, busy.ID); got.Status != StatusClosed {
+		t.Errorf("trip with a requested order = %s, want closed", got.Status)
+	}
+}

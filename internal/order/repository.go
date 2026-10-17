@@ -24,8 +24,8 @@ type repository interface {
 	UpdateStatus(ctx context.Context, o Order) error
 	InsertEvent(ctx context.Context, orderID uuid.UUID, e Event) error
 	Events(ctx context.Context, orderID uuid.UUID) ([]Event, error)
-	// ExpireUnpaid cancels every approved order whose payment deadline has passed and returns them.
-	ExpireUnpaid(ctx context.Context, now time.Time) ([]Order, error)
+	// DueUnpaid returns approved orders whose payment deadline is at or before now, oldest deadline first.
+	DueUnpaid(ctx context.Context, now time.Time, limit int) ([]uuid.UUID, error)
 }
 
 type pgRepository struct {
@@ -148,19 +148,8 @@ func (r *pgRepository) Events(ctx context.Context, orderID uuid.UUID) ([]Event, 
 	return events, nil
 }
 
-func (r *pgRepository) ExpireUnpaid(ctx context.Context, now time.Time) ([]Order, error) {
-	rows, err := r.q(ctx).ExpireUnpaidOrders(ctx, now)
-	if err != nil {
-		return nil, err
-	}
-	orders := make([]Order, len(rows))
-	for i, row := range rows {
-		orders[i] = Order{
-			ID: row.ID, Code: row.Code, TripID: row.TripID, BuyerID: row.BuyerID, JastiperID: row.JastiperID,
-			Quantity: int(row.Quantity), Status: StatusCancelled, StatusReason: row.StatusReason,
-		}
-	}
-	return orders, nil
+func (r *pgRepository) DueUnpaid(ctx context.Context, now time.Time, limit int) ([]uuid.UUID, error) {
+	return r.q(ctx).ListUnpaidPastDeadline(ctx, db.ListUnpaidPastDeadlineParams{Now: now, RowLimit: int32(limit)})
 }
 
 func toOrder(o db.Order, tripSlug, tripTitle, buyerName, jastiperName string) Order {

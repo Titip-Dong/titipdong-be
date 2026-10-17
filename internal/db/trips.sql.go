@@ -28,6 +28,20 @@ func (q *Queries) AdjustTripReservedCapacity(ctx context.Context, arg AdjustTrip
 	return err
 }
 
+const closeExpiredTrips = `-- name: CloseExpiredTrips :execrows
+UPDATE trips
+SET status = 'closed', updated_at = now()
+WHERE status = 'open' AND request_deadline <= $1::timestamptz
+`
+
+func (q *Queries) CloseExpiredTrips(ctx context.Context, now time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, closeExpiredTrips, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const closeTrip = `-- name: CloseTrip :execrows
 UPDATE trips
 SET status = 'closed', updated_at = now()
@@ -36,6 +50,26 @@ WHERE id = $1 AND status = 'open'
 
 func (q *Queries) CloseTrip(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, closeTrip, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const completeReturnedTrips = `-- name: CompleteReturnedTrips :execrows
+UPDATE trips t
+SET status = 'completed', updated_at = now()
+WHERE t.status = 'closed'
+  AND t.returns_on < $1::date
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.trip_id = t.id
+        AND o.status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed')
+  )
+`
+
+func (q *Queries) CompleteReturnedTrips(ctx context.Context, today time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, completeReturnedTrips, today)
 	if err != nil {
 		return 0, err
 	}

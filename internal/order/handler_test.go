@@ -113,6 +113,9 @@ func TestOrderErrors(t *testing.T) {
 		{"get as stranger", http.MethodGet, "/orders/" + id, "stranger", "", http.StatusNotFound},
 		{"cancel as stranger", http.MethodPost, "/orders/" + id + "/cancel", "stranger", "", http.StatusNotFound},
 		{"get without token", http.MethodGet, "/orders/" + id, "", "", http.StatusUnauthorized},
+		{"trip inbox unknown trip", http.MethodGet, "/me/trips/" + uuid.NewString() + "/orders", "jastiper", "", http.StatusNotFound},
+		{"trip inbox as buyer", http.MethodGet, "/me/trips/" + uuid.NewString() + "/orders", "buyer", "", http.StatusForbidden},
+		{"trip inbox bad status", http.MethodGet, "/me/trips/" + uuid.NewString() + "/orders?status=lost", "jastiper", "", http.StatusUnprocessableEntity},
 	}
 	if _, body := do(t, app, http.MethodPost, "/trips/tokyo/orders", "buyer", `{"productName":"X","quantity":50}`); body["detail"] != "Trip is full." {
 		t.Errorf("full trip detail = %v, want Trip is full.", body["detail"])

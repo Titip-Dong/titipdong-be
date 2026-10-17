@@ -46,6 +46,16 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}, h.list)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "listTripOrders",
+		Method:      http.MethodGet,
+		Path:        "/me/trips/{id}/orders",
+		Summary:     "List the orders on one of the jastiper's trips, newest first",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.listForTrip)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "getOrder",
 		Method:      http.MethodGet,
 		Path:        "/orders/{id}",
@@ -192,6 +202,24 @@ func (h *Handler) list(ctx context.Context, in *struct {
 		params.TripID = &id
 	}
 	page, err := h.svc.List(ctx, p.UserID, params)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	items := make([]orderResponse, len(page.Items))
+	for i, o := range page.Items {
+		items[i] = toOrderResponse(o)
+	}
+	return &struct{ Body orderPage }{Body: orderPage{Items: items, NextCursor: page.NextCursor}}, nil
+}
+
+func (h *Handler) listForTrip(ctx context.Context, in *struct {
+	ID     uuid.UUID `path:"id"`
+	Status string    `query:"status" enum:"requested,approved,rejected,cancelled,paid,shipped,delivered,disputed,released,refunded"`
+	Limit  int       `query:"limit" default:"20" minimum:"1" maximum:"100"`
+	Cursor string    `query:"cursor"`
+}) (*struct{ Body orderPage }, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	page, err := h.svc.ListForTrip(ctx, p.UserID, in.ID, ListParams{Status: Status(in.Status), Limit: in.Limit, Cursor: in.Cursor})
 	if err != nil {
 		return nil, mapError(err)
 	}

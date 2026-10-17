@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -48,7 +49,11 @@ type Actor struct {
 
 var System = Actor{Type: ActorSystem}
 
-const paymentWindow = 24 * time.Hour
+const (
+	paymentWindow  = 24 * time.Hour
+	expiryBatch    = 100
+	deadlineReason = "Payment deadline passed."
+)
 
 var (
 	ErrNotFound          = errors.New("order not found")
@@ -145,6 +150,8 @@ func allowed(from, to Status, actor ActorType) bool {
 type Service interface {
 	Create(ctx context.Context, buyerID uuid.UUID, tripSlug string, p CreateParams) (Order, error)
 	List(ctx context.Context, userID uuid.UUID, p ListParams) (Page, error)
+	// ListForTrip is the jastiper's inbox for one trip; another jastiper's trip returns trip.ErrNotFound.
+	ListForTrip(ctx context.Context, jastiperID, tripID uuid.UUID, p ListParams) (Page, error)
 	// Get returns ErrNotFound unless the actor is the order's buyer or jastiper, or an admin.
 	Get(ctx context.Context, actor Actor, id uuid.UUID) (Order, []Event, error)
 	Approve(ctx context.Context, jastiperID, id uuid.UUID, itemPrice, jastipFee int64) (Order, error)
@@ -159,6 +166,9 @@ type Service interface {
 	MarkDisputed(ctx context.Context, buyerID, id uuid.UUID, reason string) (Order, error)
 	MarkReleased(ctx context.Context, id uuid.UUID) (Order, error)
 	MarkRefunded(ctx context.Context, actor Actor, id uuid.UUID, reason string) (Order, error)
+	// ExpireUnpaid cancels approved orders past their payment deadline, one transaction each; it backs the
+	// orders.expire_unpaid job and the read paths.
+	ExpireUnpaid(ctx context.Context) error
 }
 
 func NewService(pool *pgxpool.Pool, trips trip.Service, notifier notification.Service) Service {
@@ -242,7 +252,7 @@ func (s *service) List(ctx context.Context, userID uuid.UUID, p ListParams) (Pag
 	if err != nil {
 		return Page{}, err
 	}
-	if err := s.expireUnpaid(ctx); err != nil {
+	if err := s.ExpireUnpaid(ctx); err != nil {
 		return Page{}, err
 	}
 	orders, err := s.repo.List(ctx, userID, p.Status, p.TripID, before, p.Limit+1)
@@ -255,8 +265,20 @@ func (s *service) List(ctx context.Context, userID uuid.UUID, p ListParams) (Pag
 	return Page{Items: items, NextCursor: next}, nil
 }
 
+func (s *service) ListForTrip(ctx context.Context, jastiperID, tripID uuid.UUID, p ListParams) (Page, error) {
+	t, err := s.trips.ByID(ctx, tripID)
+	if err != nil {
+		return Page{}, err
+	}
+	if t.JastiperID != jastiperID {
+		return Page{}, trip.ErrNotFound
+	}
+	p.TripID = &tripID
+	return s.List(ctx, jastiperID, p)
+}
+
 func (s *service) Get(ctx context.Context, actor Actor, id uuid.UUID) (Order, []Event, error) {
-	if err := s.expireUnpaid(ctx); err != nil {
+	if err := s.expireOne(ctx, id); err != nil {
 		return Order{}, nil, err
 	}
 	o, err := s.repo.Order(ctx, id)
@@ -386,22 +408,37 @@ func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to 
 	return out, err
 }
 
-// expireUnpaid cancels approved orders past their payment deadline and tells both parties.
-func (s *service) expireUnpaid(ctx context.Context) error {
+func (s *service) ExpireUnpaid(ctx context.Context) error {
+	due, err := s.repo.DueUnpaid(ctx, s.now(), expiryBatch)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, id := range due {
+		if err := s.expireOne(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("expire order %s: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// expireOne cancels the order if it is still approved past its deadline; anything else is a no-op.
+func (s *service) expireOne(ctx context.Context, id uuid.UUID) error {
 	return s.repo.WithTx(ctx, func(ctx context.Context) error {
-		expired, err := s.repo.ExpireUnpaid(ctx, s.now())
+		o, err := s.repo.Lock(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
-		for _, o := range expired {
-			if err := s.trips.Release(ctx, o.TripID, o.Quantity); err != nil {
-				return err
-			}
-			if err := s.notifier.Notify(ctx, cancelledEvent(o, []uuid.UUID{o.BuyerID, o.JastiperID})); err != nil {
-				return err
-			}
+		if o.Status != StatusApproved || o.PaymentDeadline == nil || s.now().Before(*o.PaymentDeadline) {
+			return nil
 		}
-		return nil
+		_, err = s.transition(ctx, System, id, StatusCancelled, deadlineReason, nil, func(o Order) notification.Event {
+			return cancelledEvent(o, []uuid.UUID{o.BuyerID, o.JastiperID})
+		})
+		return err
 	})
 }
 

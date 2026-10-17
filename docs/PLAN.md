@@ -161,9 +161,9 @@ added together with its module.
 
 | Job                     | Every   | Action                                                                                         |
 | ----------------------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `orders.expire_unpaid`  | 1 min   | `approved` orders past `payment_deadline` → `cancelled` (system), trip capacity released        |
+| `orders.expire_unpaid`  | 1 min   | `approved` orders past `payment_deadline` → `cancelled` (system), trip capacity released (done) |
 | `orders.auto_release`   | 5 min   | `shipped` orders whose shipment is older than 7 days → `delivered` (system) → funds released (F05, done) |
-| `trips.close_expired`   | 5 min   | `open` trips past `request_deadline` → `closed`; `closed` trips past `returns_on` with no active orders → `completed` |
+| `trips.close_expired`   | 5 min   | `open` trips past `request_deadline` → `closed`; `closed` trips past `returns_on` with no active orders → `completed` (done) |
 | `auth.purge_tokens`     | 1 hour  | Delete `refresh_tokens` rows past `expires_at` (done)                                           |
 | `uploads.purge_pending` | 1 hour  | Delete blobs and rows of uploads never attached after 24 hours (done)                           |
 

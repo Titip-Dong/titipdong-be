@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------- |
 | Package | `internal/order`                                                             |
 | Tag     | `order`                                                                      |
-| Status  | Partial: state machine, endpoints, notifications, capacity done; photo, trip inbox to do |
+| Status  | Partial: state machine, endpoints, notifications, capacity, trip inbox done; photo to do |
 
 ## Overview
 
@@ -187,7 +187,7 @@ users |o--o{ order_events : actor
 | `POST` | `/orders/{id}/approve`      | `approveOrder`       | `jastiper` (owner)          | Done   | Body `{ itemPrice, jastipFee }`              |
 | `POST` | `/orders/{id}/reject`       | `rejectOrder`        | `jastiper` (owner)          | Done   | Body `{ reason }`                            |
 | `POST` | `/orders/{id}/cancel`       | `cancelOrder`        | `buyer` (owner)             | Done   | Before payment only                          |
-| `GET`  | `/me/trips/{id}/orders`     | `listTripOrders`     | `jastiper` (owner)          | To do  | Jastiper inbox for one trip; filter `status`; cursor |
+| `GET`  | `/me/trips/{id}/orders`     | `listTripOrders`     | `jastiper` (owner)          | Done   | Jastiper inbox for one trip; filter `status`; cursor; another jastiper's trip is 404 |
 
 `createOrder` gains an optional `photoUploadId`; order responses gain a signed `photoUrl`.
 
@@ -310,10 +310,11 @@ Done:
 - [x] Notifications (F07) inside each transition's transaction, including the expiry on read.
 - [x] Capacity: `trip.Reserve` on create, `trip.Release` on reject, cancel, expiry, and refund.
 - [x] Transition `shipped → delivered` by the system, for auto-release.
+- [x] `GET /me/trips/{id}/orders`.
+- [x] Job `orders.expire_unpaid` (every minute, up to 100 orders a run, one transaction each); `listOrders` runs the
+      same sweep and `getOrder` expires the order it reads.
 
 Remaining:
 
 - [ ] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
-- [ ] `GET /me/trips/{id}/orders`.
-- [ ] Job `orders.expire_unpaid`.
 - [ ] Integration test for concurrent transitions on the same order.

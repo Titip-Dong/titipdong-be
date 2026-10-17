@@ -53,3 +53,19 @@ FOR UPDATE OF t;
 UPDATE trips
 SET reserved_capacity = reserved_capacity + sqlc.arg(units)::integer, updated_at = now()
 WHERE id = sqlc.arg(id);
+
+-- name: CloseExpiredTrips :execrows
+UPDATE trips
+SET status = 'closed', updated_at = now()
+WHERE status = 'open' AND request_deadline <= sqlc.arg(now)::timestamptz;
+
+-- name: CompleteReturnedTrips :execrows
+UPDATE trips t
+SET status = 'completed', updated_at = now()
+WHERE t.status = 'closed'
+  AND t.returns_on < sqlc.arg(today)::date
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.trip_id = t.id
+        AND o.status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed')
+  );
