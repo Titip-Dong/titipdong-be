@@ -610,3 +610,43 @@ func TestConcurrentPayoutRequests(t *testing.T) {
 		t.Errorf("successful concurrent requests = %d, want 1", ok)
 	}
 }
+
+// TestPlatformTotals compares the summary with an independent sum in one snapshot, so tests posting to the ledger
+// in parallel cannot make it flaky.
+func TestPlatformTotals(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	f.releasedOrder(t, 100_000)
+
+	err := database.WithTx(ctx, f.pool, func(ctx context.Context) error {
+		conn := database.Conn(ctx, f.pool)
+		if _, err := conn.Exec(ctx, `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`); err != nil {
+			return err
+		}
+		got, err := f.svc.PlatformTotals(ctx)
+		if err != nil {
+			return err
+		}
+		var want Totals
+		err = conn.QueryRow(ctx, `SELECT
+			COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END) FILTER (WHERE a.kind = 'escrow'), 0),
+			COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END) FILTER (WHERE a.kind = 'platform_revenue'), 0),
+			COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END) FILTER (WHERE a.kind = 'jastiper_payable'), 0),
+			COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END) FILTER (WHERE a.kind = 'buyer_refundable'), 0)
+			FROM ledger_entries e JOIN ledger_accounts a ON a.id = e.account_id`).
+			Scan(&want.EscrowHeld, &want.PlatformRevenue, &want.PayableOutstanding, &want.BuyerRefundable)
+		if err != nil {
+			return err
+		}
+		if got != want {
+			t.Errorf("PlatformTotals() = %+v, want %+v", got, want)
+		}
+		if got.PlatformRevenue < 5_000 || got.PayableOutstanding < 95_000 {
+			t.Errorf("PlatformTotals() = %+v, missing this test's release", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

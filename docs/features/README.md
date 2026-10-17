@@ -298,7 +298,7 @@ fe -> ship      : POST /orders/{id}/confirm-receipt
 ship -> db      : BEGIN
 ship -> order   : MarkDelivered(orderID, buyer)
 ship -> db      : UPDATE shipments SET delivered_at
-ship -> pay     : Release(orderID)
+ship -> pay     : Release(actor, orderID)
 pay -> pay      : fee = floor(total × 5 / 100)
 pay -> db       : Ledger release:<order_id>: debit escrow,\ncredit jastiper_payable (95%) + platform_revenue (5%)
 pay -> order    : MarkReleased(orderID)
@@ -366,7 +366,7 @@ alt refund
     pay -> order    : MarkRefunded(orderID)
 else release
     dsp -> order    : MarkDelivered(orderID, admin)
-    dsp -> pay      : Release(orderID)
+    dsp -> pay      : Release(actor, orderID)
 end
 
 dsp -> db       : INSERT audit_logs (dispute.decided)

@@ -116,6 +116,39 @@ func (q *Queries) LedgerAccountBalance(ctx context.Context, arg LedgerAccountBal
 	return balance, err
 }
 
+const ledgerBalancesByKind = `-- name: LedgerBalancesByKind :many
+SELECT a.kind,
+       COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS balance
+FROM ledger_accounts a
+LEFT JOIN ledger_entries e ON e.account_id = a.id
+GROUP BY a.kind
+`
+
+type LedgerBalancesByKindRow struct {
+	Kind    string
+	Balance int64
+}
+
+func (q *Queries) LedgerBalancesByKind(ctx context.Context) ([]LedgerBalancesByKindRow, error) {
+	rows, err := q.db.Query(ctx, ledgerBalancesByKind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LedgerBalancesByKindRow
+	for rows.Next() {
+		var i LedgerBalancesByKindRow
+		if err := rows.Scan(&i.Kind, &i.Balance); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ledgerOrderBalance = `-- name: LedgerOrderBalance :one
 SELECT COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS balance
 FROM ledger_entries e

@@ -109,6 +109,14 @@ type Payout struct {
 	DecidedAt       *time.Time
 }
 
+// Totals are platform-wide ledger balances in whole rupiah.
+type Totals struct {
+	EscrowHeld         int64
+	PlatformRevenue    int64
+	PayableOutstanding int64
+	BuyerRefundable    int64
+}
+
 type PayoutPage struct {
 	Items      []Payout
 	NextCursor string
@@ -137,6 +145,8 @@ type Service interface {
 	// (buyer, admin deciding a dispute, or the system) and is recorded in the audit log.
 	Release(ctx context.Context, actor order.Actor, orderID uuid.UUID) (order.Order, error)
 	JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error)
+	// PlatformTotals sums the ledger for the admin dashboard.
+	PlatformTotals(ctx context.Context) (Totals, error)
 	// Refund returns a paid or disputed order's whole total to the buyer and marks the order refunded.
 	// note becomes the order's status reason.
 	Refund(ctx context.Context, actor order.Actor, orderID uuid.UUID, reason RefundReason, note string) (Refund, error)
@@ -616,6 +626,19 @@ func actorID(a order.Actor) *uuid.UUID {
 		return nil
 	}
 	return &a.ID
+}
+
+func (s *service) PlatformTotals(ctx context.Context) (Totals, error) {
+	b, err := s.repo.BalancesByKind(ctx)
+	if err != nil {
+		return Totals{}, err
+	}
+	return Totals{
+		EscrowHeld:         b[accountEscrow],
+		PlatformRevenue:    b[accountPlatformRevenue],
+		PayableOutstanding: b[accountJastiperPayable],
+		BuyerRefundable:    b[accountBuyerRefundable],
+	}, nil
 }
 
 func (s *service) JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error) {

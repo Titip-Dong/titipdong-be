@@ -74,6 +74,8 @@ type repository interface {
 	// Post writes the transaction and its entries, or nothing if its idempotency key was already used.
 	Post(ctx context.Context, id uuid.UUID, t ledgerTransaction) error
 	AccountBalance(ctx context.Context, a account) (int64, error)
+	// BalancesByKind sums every account of each kind (credits minus debits).
+	BalancesByKind(ctx context.Context) (map[accountKind]int64, error)
 
 	SavePayoutAccount(ctx context.Context, a PayoutAccount) (PayoutAccount, error)
 	// PayoutAccount returns ErrNoPayoutAccount when the user has not saved one.
@@ -219,6 +221,18 @@ func (r *pgRepository) accountID(ctx context.Context, a account) (uuid.UUID, err
 
 func (r *pgRepository) AccountBalance(ctx context.Context, a account) (int64, error) {
 	return r.q(ctx).LedgerAccountBalance(ctx, db.LedgerAccountBalanceParams{Kind: string(a.Kind), UserID: a.UserID})
+}
+
+func (r *pgRepository) BalancesByKind(ctx context.Context) (map[accountKind]int64, error) {
+	rows, err := r.q(ctx).LedgerBalancesByKind(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[accountKind]int64, len(rows))
+	for _, row := range rows {
+		out[accountKind(row.Kind)] = row.Balance
+	}
+	return out, nil
 }
 
 func (r *pgRepository) SavePayoutAccount(ctx context.Context, a PayoutAccount) (PayoutAccount, error) {

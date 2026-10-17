@@ -27,3 +27,10 @@ SELECT COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amoun
 FROM ledger_entries e
 JOIN ledger_accounts a ON a.id = e.account_id
 WHERE a.kind = $1 AND e.order_id = $2;
+
+-- name: LedgerBalancesByKind :many
+SELECT a.kind,
+       COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS balance
+FROM ledger_accounts a
+LEFT JOIN ledger_entries e ON e.account_id = a.id
+GROUP BY a.kind;
