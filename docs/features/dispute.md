@@ -225,7 +225,7 @@ else
     P -> O : MarkRefunded(admin, orderID)
   else decision = release
     S -> O : MarkDelivered(admin, orderID)
-    S -> P : Release(orderID)
+    S -> P : Release(actor, orderID)
     P -> DB : ledger escrow → jastiper + platform, order → released
   end
   S -> DB : INSERT audit_logs (dispute.decided)

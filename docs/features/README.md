@@ -13,7 +13,7 @@ source of truth, and its file is kept in sync with them.
 | F05 | [Shipment](shipment.md)             | `internal/shipment`     | Partial: ship, confirm, auto-release done; proof photo to do           |
 | F06 | [Dispute](dispute.md)               | `internal/dispute`      | Done                                                                   |
 | F07 | [Notification](notification.md)     | `internal/notification` | Done                                                                   |
-| F08 | [Admin](admin.md)                   | `internal/admin`        | To do                                                                  |
+| F08 | [Admin](admin.md)                   | `internal/admin`        | Done                                                                   |
 
 Scope decisions (fake payment gateway, in-process jobs, Azure Blob uploads, in-app notifications only) and what is
 deliberately left out are in [PLAN.md](../PLAN.md#2-scope-decisions).
@@ -298,7 +298,7 @@ fe -> ship      : POST /orders/{id}/confirm-receipt
 ship -> db      : BEGIN
 ship -> order   : MarkDelivered(orderID, buyer)
 ship -> db      : UPDATE shipments SET delivered_at
-ship -> pay     : Release(orderID)
+ship -> pay     : Release(actor, orderID)
 pay -> pay      : fee = floor(total × 5 / 100)
 pay -> db       : Ledger release:<order_id>: debit escrow,\ncredit jastiper_payable (95%) + platform_revenue (5%)
 pay -> order    : MarkReleased(orderID)
@@ -366,7 +366,7 @@ alt refund
     pay -> order    : MarkRefunded(orderID)
 else release
     dsp -> order    : MarkDelivered(orderID, admin)
-    dsp -> pay      : Release(orderID)
+    dsp -> pay      : Release(actor, orderID)
 end
 
 dsp -> db       : INSERT audit_logs (dispute.decided)

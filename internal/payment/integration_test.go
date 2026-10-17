@@ -207,7 +207,7 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 		t.Errorf("Checkout(paid) error = %v, want ErrOrderNotPayable", err)
 	}
 
-	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+	if _, err := f.svc.Release(ctx, order.System, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
 		t.Errorf("Release(paid) error = %v, want ErrInvalidTransition", err)
 	}
 	before, _ := f.svc.JastiperBalance(ctx, f.jastiper)
@@ -217,7 +217,8 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 	if _, err := f.orders.MarkDelivered(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	released, err := f.svc.Release(ctx, o.ID)
+	buyerActor := order.Actor{ID: f.buyer, Type: order.ActorBuyer}
+	released, err := f.svc.Release(ctx, buyerActor, o.ID)
 	if err != nil {
 		t.Fatalf("Release() error = %v", err)
 	}
@@ -225,8 +226,16 @@ func TestPaymentToReleaseFlow(t *testing.T) {
 	if released.Status != order.StatusReleased || after-before != 95_001 || f.escrow(t, o.ID) != 0 {
 		t.Errorf("status %s, jastiper +%d, escrow %d; want released, +95001, 0", released.Status, after-before, f.escrow(t, o.ID))
 	}
-	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+	if _, err := f.svc.Release(ctx, order.System, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
 		t.Errorf("Release(again) error = %v, want ErrInvalidTransition", err)
+	}
+	if n := f.auditCount(t, "order.released", o.ID); n != 1 {
+		t.Errorf("order.released audit rows after two release attempts = %d, want 1", n)
+	}
+	var actorType string
+	if err := f.pool.QueryRow(ctx, `SELECT actor_type FROM audit_logs WHERE action = 'order.released' AND target_id = $1`,
+		o.ID.String()).Scan(&actorType); err != nil || actorType != "buyer" {
+		t.Errorf("order.released actor = %q, %v; want buyer", actorType, err)
 	}
 	got := f.notifications(t, f.jastiper, notification.TypeOrderReleased)
 	if len(got) != 1 || got[0].Data["amount"] != float64(95_001) {
@@ -410,7 +419,7 @@ func TestAdminRefundsDisputedOrder(t *testing.T) {
 			t.Errorf("order.refunded for %s = %+v, want one", user, n)
 		}
 	}
-	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+	if _, err := f.svc.Release(ctx, order.System, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
 		t.Errorf("Release(refunded) error = %v, want ErrInvalidTransition", err)
 	}
 }
@@ -457,7 +466,7 @@ func (f fixture) releasedOrder(t *testing.T, itemPrice int64) order.Order {
 	if _, err := f.orders.MarkDelivered(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.Release(ctx, o.ID); err != nil {
+	if _, err := f.svc.Release(ctx, order.System, o.ID); err != nil {
 		t.Fatal(err)
 	}
 	return o
@@ -599,5 +608,45 @@ func TestConcurrentPayoutRequests(t *testing.T) {
 	}
 	if ok != 1 {
 		t.Errorf("successful concurrent requests = %d, want 1", ok)
+	}
+}
+
+// TestPlatformTotals compares the summary with an independent sum in one snapshot, so tests posting to the ledger
+// in parallel cannot make it flaky.
+func TestPlatformTotals(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	f.releasedOrder(t, 100_000)
+
+	err := database.WithTx(ctx, f.pool, func(ctx context.Context) error {
+		conn := database.Conn(ctx, f.pool)
+		if _, err := conn.Exec(ctx, `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`); err != nil {
+			return err
+		}
+		got, err := f.svc.PlatformTotals(ctx)
+		if err != nil {
+			return err
+		}
+		var want Totals
+		err = conn.QueryRow(ctx, `SELECT
+			COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END) FILTER (WHERE a.kind = 'escrow'), 0),
+			COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END) FILTER (WHERE a.kind = 'platform_revenue'), 0),
+			COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END) FILTER (WHERE a.kind = 'jastiper_payable'), 0),
+			COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END) FILTER (WHERE a.kind = 'buyer_refundable'), 0)
+			FROM ledger_entries e JOIN ledger_accounts a ON a.id = e.account_id`).
+			Scan(&want.EscrowHeld, &want.PlatformRevenue, &want.PayableOutstanding, &want.BuyerRefundable)
+		if err != nil {
+			return err
+		}
+		if got != want {
+			t.Errorf("PlatformTotals() = %+v, want %+v", got, want)
+		}
+		if got.PlatformRevenue < 5_000 || got.PayableOutstanding < 95_000 {
+			t.Errorf("PlatformTotals() = %+v, missing this test's release", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

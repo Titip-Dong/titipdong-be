@@ -233,9 +233,9 @@ Admin payout endpoints live in this package (tag `admin`) because they post to t
 
 | Method                                        | Caller                                   | Effect                                                |
 | --------------------------------------------- | ---------------------------------------- | ----------------------------------------------------- |
-| `Release(ctx, orderID)`                       | Shipment, Dispute, auto-release job      | `escrow → jastiper_payable + platform_revenue`, `order.MarkReleased`, notify jastiper |
+| `Release(ctx, actor, orderID)`                | Shipment, Dispute, auto-release job      | `escrow → jastiper_payable + platform_revenue`, `order.MarkReleased`, notify jastiper, audit `order.released` with the delivering actor |
 | `Refund(ctx, actor, orderID, reason, note)`   | Dispute, `cancelPaidOrder`               | `refund` posting, `Gateway.Refund`, `refund_paid` posting, `order.MarkRefunded` (`note` = status reason), `trip.Release` (through order), notify, audit `order.refunded` |
-| `Ledger summaries` (`PlatformTotals`, …)      | Admin                                    | Escrow held, platform revenue, payable outstanding     |
+| `PlatformTotals(ctx)`                         | Admin                                    | Ledger sums: escrow held, platform revenue, payable outstanding, owed to buyers |
 
 ## Sequence diagrams
 
@@ -298,7 +298,7 @@ participant "payment.Service" as S
 participant "order.Service" as O
 database PostgreSQL as DB
 
-C -> S : Release(orderID)
+C -> S : Release(actor, orderID)
 S -> DB : SELECT order FOR UPDATE
 alt status != delivered
   S --> C : ErrInvalidTransition
@@ -397,7 +397,7 @@ Done:
 - [x] `payments` and the three ledger tables with append-only and balance triggers.
 - [x] `Gateway` interface and fake gateway.
 - [x] `POST /orders/{id}/payments` (refused after the deadline), `POST /payments/{id}/simulate`.
-- [x] `Release(orderID)` with the 5% fee, called by Shipment.
+- [x] `Release(actor, orderID)` with the 5% fee, called by Shipment.
 - [x] `GET /wallet` balance.
 - [x] Notifications `payment.received` (buyer, jastiper) and `order.released` (jastiper share) in the same
       transaction.
@@ -405,11 +405,11 @@ Done:
       `order.refunded` notification and audit row; integration tests for both refund paths and a failing gateway.
 - [x] `payout_accounts` and `payouts` tables, payout account and payout endpoints, admin payout endpoints, with the
       `payout.paid` / `payout.rejected` notifications and audit rows; integration tests including concurrent requests.
+- [x] Audit `order.released` rows, with the actor who delivered the order (buyer, admin, or system).
+- [x] `PlatformTotals` ledger summary for F08 stats.
 - [x] Integration tests: ledger balance, checkout after the deadline, payment → release.
 
 Remaining:
 
 - [ ] `GET /wallet` gains `inEscrow` and `pendingPayout`; `GET /wallet/transactions`.
-- [ ] Audit log rows for releases.
-- [ ] Ledger summaries for F08 stats.
 - [ ] Integration test: concurrent release and refund on one order (refund and payout postings are covered).

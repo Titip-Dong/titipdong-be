@@ -109,6 +109,14 @@ type Payout struct {
 	DecidedAt       *time.Time
 }
 
+// Totals are platform-wide ledger balances in whole rupiah.
+type Totals struct {
+	EscrowHeld         int64
+	PlatformRevenue    int64
+	PayableOutstanding int64
+	BuyerRefundable    int64
+}
+
 type PayoutPage struct {
 	Items      []Payout
 	NextCursor string
@@ -133,9 +141,12 @@ type Service interface {
 	// Settling an already paid payment is a no-op.
 	Settle(ctx context.Context, paymentID uuid.UUID, providerTransactionID string) (Payment, error)
 	SimulatePaid(ctx context.Context, buyerID, paymentID uuid.UUID) (Payment, error)
-	// Release moves a delivered order's escrow to the jastiper and the platform fee.
-	Release(ctx context.Context, orderID uuid.UUID) (order.Order, error)
+	// Release moves a delivered order's escrow to the jastiper and the platform fee; actor is who delivered it
+	// (buyer, admin deciding a dispute, or the system) and is recorded in the audit log.
+	Release(ctx context.Context, actor order.Actor, orderID uuid.UUID) (order.Order, error)
 	JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error)
+	// PlatformTotals sums the ledger for the admin dashboard.
+	PlatformTotals(ctx context.Context) (Totals, error)
 	// Refund returns a paid or disputed order's whole total to the buyer and marks the order refunded.
 	// note becomes the order's status reason.
 	Refund(ctx context.Context, actor order.Actor, orderID uuid.UUID, reason RefundReason, note string) (Refund, error)
@@ -298,7 +309,7 @@ func (s *service) SimulatePaid(ctx context.Context, buyerID, paymentID uuid.UUID
 	return p, err
 }
 
-func (s *service) Release(ctx context.Context, orderID uuid.UUID) (order.Order, error) {
+func (s *service) Release(ctx context.Context, actor order.Actor, orderID uuid.UUID) (order.Order, error) {
 	var released order.Order
 	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
 		o, err := s.orders.Lock(ctx, orderID)
@@ -327,10 +338,21 @@ func (s *service) Release(ctx context.Context, orderID uuid.UUID) (order.Order, 
 		if err != nil {
 			return err
 		}
-		return s.notifier.Notify(ctx, notification.Event{
+		err = s.notifier.Notify(ctx, notification.Event{
 			Type:       notification.TypeOrderReleased,
 			Recipients: []uuid.UUID{o.JastiperID},
 			Data:       map[string]any{"orderId": o.ID, "orderCode": o.Code, "amount": total - fee},
+		})
+		if err != nil {
+			return err
+		}
+		return s.audit.Write(ctx, audit.Entry{
+			ActorID:    actorID(actor),
+			ActorType:  string(actor.Type),
+			Action:     "order.released",
+			TargetType: "order",
+			TargetID:   o.ID.String(),
+			Metadata:   map[string]any{"total": total, "fee": fee, "jastiperAmount": total - fee},
 		})
 	})
 	return released, err
@@ -604,6 +626,19 @@ func actorID(a order.Actor) *uuid.UUID {
 		return nil
 	}
 	return &a.ID
+}
+
+func (s *service) PlatformTotals(ctx context.Context) (Totals, error) {
+	b, err := s.repo.BalancesByKind(ctx)
+	if err != nil {
+		return Totals{}, err
+	}
+	return Totals{
+		EscrowHeld:         b[accountEscrow],
+		PlatformRevenue:    b[accountPlatformRevenue],
+		PayableOutstanding: b[accountJastiperPayable],
+		BuyerRefundable:    b[accountBuyerRefundable],
+	}, nil
 }
 
 func (s *service) JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error) {

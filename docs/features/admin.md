@@ -4,7 +4,7 @@
 | ------- | ---------------- |
 | Package | `internal/admin` |
 | Tag     | `admin`          |
-| Status  | To do            |
+| Status  | Done             |
 
 ## Overview
 
@@ -69,6 +69,23 @@ Full DDL in [DATABASE.md](../DATABASE.md#10-platform).
 | `GET`   | `/admin/audit-logs`       | `listAuditLogs`         | `admin` | Filter `targetType`, `targetId`, `actorId`; cursor       |
 
 An admin reads a single order through `GET /orders/{id}` (F03), which already allows admins.
+
+Lists take `limit` (1–100, default 20) and `cursor`, newest first, and return `{ items, nextCursor }`.
+
+- `getAdminStats`: `users` (`[{ role, status, count }]`), `orders` (`[{ status, count, total }]`), `gmv` (totals of
+  orders `paid`, `shipped`, `delivered`, `disputed`, `released`: paid and not refunded), `escrowHeld`,
+  `platformRevenue`, `payableOutstanding` (released to jastipers, not paid out), `buyerRefundable` (refunds the
+  gateway has not paid), `openDisputes`, `pendingPayouts` (`{ count, amount }`). Ledger figures come from
+  `payment.PlatformTotals`.
+- `listAdminOrders`: `status`, `code` (any part of the code, case-insensitive). Items carry `trip`, `buyer`,
+  `jastiper`, `total`.
+- `listAdminTransactions`: `kind`. Each transaction has `orderId`/`orderCode` when tied to an order, `createdBy`
+  for admin postings (payouts), and `entries` (`account`, `userId`, `direction`, `amount`).
+- `listAdminUsers`: `q` (part of name or email), `role`, `status`.
+- `updateAdminUser`: 200 with the user; 404 unknown user; 422 for an admin target. Audited as `user.suspended` or
+  `user.activated`.
+- `listAuditLogs`: `targetType`, `targetId`, `actorId`; items include `actorName` and `metadata`. Its cursor is the
+  last audit log ID, since IDs are `BIGINT`.
 
 ## Sequence diagrams
 
@@ -138,7 +155,10 @@ H --> Admin : 200 stats
 
 ## Remaining work
 
-- [ ] `GET /admin/stats` (depends on F04 ledger summaries, F06 disputes, payouts).
-- [ ] `GET /admin/orders`, `GET /admin/transactions`.
-- [ ] `GET /admin/users` and `PATCH /admin/users/{id}` (depends on F01 `users.status` and `SetStatus`).
-- [ ] `GET /admin/audit-logs` (depends on `platform/audit`).
+Done:
+
+- [x] `GET /admin/stats`.
+- [x] `GET /admin/orders`, `GET /admin/transactions`.
+- [x] `GET /admin/users` and `PATCH /admin/users/{id}`.
+- [x] `GET /admin/audit-logs`.
+- [x] Integration test over a paid order, a suspension round trip, and audit log paging.

@@ -162,7 +162,7 @@ alt not owner / status != shipped
   H --> Pembeli : 404 / 409
 else
   S -> DB : UPDATE shipments SET delivered_at = now
-  S -> P : Release(orderID)
+  S -> P : Release(actor, orderID)
   P -> DB : ledger escrow → jastiper 95% + platform 5%
   P -> O : MarkReleased(orderID)
   S -> DB : COMMIT

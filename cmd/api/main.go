@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
+	"github.com/Titip-Dong/titipdong-be/internal/admin"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/dispute"
 	"github.com/Titip-Dong/titipdong-be/internal/notification"
@@ -150,6 +151,7 @@ func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config, store *
 	shipment.NewHandler(shipmentService).RegisterRoutes(api)
 	disputeService := dispute.NewService(pool, orderService, paymentService, uploadService, notificationService)
 	dispute.NewHandler(disputeService).RegisterRoutes(api)
+	admin.NewHandler(admin.NewService(pool, authService, paymentService)).RegisterRoutes(api)
 
 	return []jobs.Job{
 		{Name: "uploads.purge_pending", Every: time.Hour, Run: uploadService.PurgePending},
