@@ -20,7 +20,7 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: transactions   | Done. `database.WithTx` carries the transaction in `context.Context`                                |
 | Platform: observability  | Done. JSON logs with request ID, `/metrics`, local Prometheus/Grafana/Loki/Alloy stack              |
 | Platform: runtime        | Done. Readiness probe, graceful shutdown, job runner, OpenAPI export, audit log, blob uploads       |
-| Platform: remaining      | To do. CI checks                                                                                    |
+| Platform: CI             | Done. `check.yml` on every push except `main`: `make check`, integration tests with `-race` against PostgreSQL, OpenAPI export; `deploy-aks.yml` on `main` |
 | F01 Auth & User          | Done                                                                                               |
 | F02 Trip & Catalog       | Done                                                                                               |
 | F03 Order                | Done |
