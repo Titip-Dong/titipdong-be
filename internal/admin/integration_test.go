@@ -14,6 +14,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 )
 
@@ -44,7 +45,7 @@ func TestAdminBackOffice(t *testing.T) {
 	users := auth.NewService(pool, "test-secret-that-is-at-least-32-bytes")
 	notifier := notification.NewService(pool)
 	trips := trip.NewService(pool)
-	orders := order.NewService(pool, trips, notifier)
+	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
 	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})
 	svc := NewService(pool, users, payments)
 

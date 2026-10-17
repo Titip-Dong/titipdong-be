@@ -16,6 +16,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/platform/audit"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -56,7 +57,7 @@ func newFixture(t *testing.T, now func() time.Time) fixture {
 	}
 	trips := trip.NewService(pool)
 	notifier := notification.NewService(pool)
-	orders := order.NewService(pool, trips, notifier)
+	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
 	return fixture{
 		pool:     pool,
 		notifier: notifier,
@@ -648,5 +649,23 @@ func TestPlatformTotals(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOrderPhotoFailureRollsBackReservation(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.approvedOrder(t, 2, 10_000, 0)
+	tr, err := trip.NewService(f.pool).ByID(ctx, o.TripID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo := uuid.New()
+	// The fixture's upload service has no blob store, so attaching fails after the capacity was reserved.
+	if _, err := f.orders.Create(ctx, f.buyer, tr.Slug, order.CreateParams{ProductName: "X", Quantity: 3, PhotoUpload: &photo}); !errors.Is(err, upload.ErrUnavailable) {
+		t.Fatalf("Create(photo, no blob store) error = %v, want upload.ErrUnavailable", err)
+	}
+	if left := f.remainingCapacity(t, o.TripID); left != 8 {
+		t.Errorf("remaining capacity = %d, want 8: the failed order must not keep its reservation", left)
 	}
 }

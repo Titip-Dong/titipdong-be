@@ -65,7 +65,7 @@ func newFixture(t *testing.T) fixture {
 		return u.ID
 	}
 	notifier := notification.NewService(pool)
-	orders := order.NewService(pool, trip.NewService(pool), notifier)
+	orders := order.NewService(pool, trip.NewService(pool), fakeUploads{}, notifier)
 	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})
 	f := fixture{
 		pool: pool, orders: orders, payments: payments, notifier: notifier,

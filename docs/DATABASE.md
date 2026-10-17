@@ -424,7 +424,7 @@ CREATE INDEX trip_items_trip_idx ON trip_items (trip_id, position);
 
 ## 5. F03 Order
 
-### `orders` (exists, to extend: `photo_key`)
+### `orders` (exists)
 
 ```sql
 CREATE TABLE orders (

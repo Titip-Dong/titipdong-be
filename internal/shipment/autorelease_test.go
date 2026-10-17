@@ -13,6 +13,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 )
 
@@ -42,7 +43,7 @@ func TestAutoRelease(t *testing.T) {
 	buyer, jastiper := user(auth.RoleBuyer), user(auth.RoleJastiper)
 	trips := trip.NewService(pool)
 	notifier := notification.NewService(pool)
-	orders := order.NewService(pool, trips, notifier)
+	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
 	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})
 	svc := NewService(pool, orders, payments, notifier)
 

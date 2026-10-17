@@ -55,6 +55,7 @@ func (r *pgRepository) CreateOrder(ctx context.Context, o Order) error {
 		ProductUrl:  o.ProductURL,
 		Quantity:    int32(o.Quantity),
 		Notes:       o.Notes,
+		PhotoKey:    nonEmpty(o.PhotoKey),
 	})
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "orders_code_key" {
@@ -173,8 +174,23 @@ func toOrder(o db.Order, tripSlug, tripTitle, buyerName, jastiperName string) Or
 		Status:          Status(o.Status),
 		StatusReason:    o.StatusReason,
 		PaymentDeadline: o.PaymentDeadline,
+		PhotoKey:        deref(o.PhotoKey),
 		CreatedAt:       o.CreatedAt,
 	}
+}
+
+func nonEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func notFound(err error) error {

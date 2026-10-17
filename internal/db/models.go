@@ -107,6 +107,7 @@ type Order struct {
 	PaymentDeadline *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	PhotoKey        *string
 }
 
 type OrderEvent struct {
