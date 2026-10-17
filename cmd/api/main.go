@@ -138,11 +138,11 @@ func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config, store *
 	notification.NewHandler(notificationService).RegisterRoutes(api)
 	tripService := trip.NewService(pool)
 	trip.NewHandler(tripService).RegisterRoutes(api)
-	orderService := order.NewService(pool, tripService)
+	orderService := order.NewService(pool, tripService, notificationService)
 	order.NewHandler(orderService).RegisterRoutes(api)
-	paymentService := payment.NewService(pool, orderService, payment.FakeGateway{})
+	paymentService := payment.NewService(pool, orderService, notificationService, payment.FakeGateway{})
 	payment.NewHandler(paymentService, cfg.PaymentGateway == "fake").RegisterRoutes(api)
-	shipment.NewHandler(shipment.NewService(pool, orderService, paymentService)).RegisterRoutes(api)
+	shipment.NewHandler(shipment.NewService(pool, orderService, paymentService, notificationService)).RegisterRoutes(api)
 
 	return []jobs.Job{
 		{Name: "uploads.purge_pending", Every: time.Hour, Run: uploadService.PurgePending},

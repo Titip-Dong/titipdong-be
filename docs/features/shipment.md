@@ -4,7 +4,7 @@
 | ------- | ------------------------------------------------------------- |
 | Package | `internal/shipment`                                           |
 | Tag     | `shipment`                                                    |
-| Status  | Partial: ship, get, confirm receipt done; proof photo, notifications to do |
+| Status  | Partial: ship, get, confirm receipt, notifications done; proof photo to do |
 
 ## Overview
 
@@ -176,9 +176,9 @@ Done:
 - [x] `shipments` table and queries.
 - [x] `PUT /orders/{id}/shipment`, `GET /orders/{id}/shipment`, `POST /orders/{id}/confirm-receipt` (one
       transaction with the release).
+- [x] `order.shipped` notification in the ship transaction.
 
 Remaining:
 
 - [ ] `proof_key` column, `proofUploadId` on ship, `proofUrl` in the response.
 - [ ] `autoReleaseAt` in the response and the `shipped_at` index for the auto-release job.
-- [ ] `order.shipped` notification.

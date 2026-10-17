@@ -9,6 +9,7 @@ import (
 
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
@@ -17,7 +18,7 @@ import (
 )
 
 func TestShipValidation(t *testing.T) {
-	svc := newService(nil, nil, nil, time.Now)
+	svc := newService(nil, nil, nil, nil, time.Now)
 	tests := map[string]ShipParams{
 		"unknown method":       {Method: "drone"},
 		"courier without code": {Method: MethodCourier, TrackingNumber: "JP123"},
@@ -59,9 +60,10 @@ func TestShipAndConfirmReceipt(t *testing.T) {
 	buyer, jastiper := user(auth.RoleBuyer), user(auth.RoleJastiper)
 
 	trips := trip.NewService(pool)
-	orders := order.NewService(pool, trips)
-	payments := payment.NewService(pool, orders, payment.FakeGateway{})
-	svc := NewService(pool, orders, payments)
+	notifier := notification.NewService(pool)
+	orders := order.NewService(pool, trips, notifier)
+	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})
+	svc := NewService(pool, orders, payments, notifier)
 
 	tr, err := trips.Create(ctx, jastiper, trip.CreateParams{
 		Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",
@@ -99,6 +101,13 @@ func TestShipAndConfirmReceipt(t *testing.T) {
 	}
 	if sh.OrderStatus != order.StatusShipped || sh.CourierCode != "jne" {
 		t.Errorf("shipment = %+v", sh)
+	}
+	page, err := notifier.List(ctx, buyer, notification.ListParams{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := page.Items; len(n) != 1 || n[0].Type != notification.TypeOrderShipped || n[0].Data["trackingNumber"] != "JP123" {
+		t.Errorf("buyer's latest notification = %+v, want order.shipped", n)
 	}
 	if _, err := svc.Ship(ctx, jastiper, o.ID, courier); !errors.Is(err, order.ErrInvalidTransition) {
 		t.Errorf("Ship(again) error = %v, want ErrInvalidTransition", err)

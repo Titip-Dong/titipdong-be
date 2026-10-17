@@ -4,7 +4,7 @@
 | ------- | ----------------------- |
 | Package | `internal/notification` |
 | Tag     | `notification`          |
-| Status  | Partial: endpoints and `Notify` done; wiring into modules to do |
+| Status  | Partial: endpoints done; order, payment, shipment events wired; refund, dispute, payout events wait on those features |
 
 ## Overview
 
@@ -187,7 +187,10 @@ Done:
 - [x] `Notify` and `AdminIDs`.
 - [x] `listNotifications`, `getUnreadCount`, `markNotificationRead`, `markAllNotificationsRead`.
 - [x] Service and handler tests; integration test that a rolled-back transaction leaves no notification.
+- [x] `Notify` wired into Order (`order.requested`, `order.approved`, `order.rejected`, `order.cancelled` including
+      the payment-deadline expiry), Payment (`payment.received`, `order.released`), and Shipment (`order.shipped`).
 
 Remaining:
 
-- [ ] Wire `Notify` into Order, Payment, Shipment, and Dispute for every event type above.
+- [ ] `order.refunded`, `payout.paid`, `payout.rejected`: with F04 refunds and payouts.
+- [ ] `dispute.opened`, `dispute.message`, `dispute.resolved`: with F06.

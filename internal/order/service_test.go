@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
 	"github.com/google/uuid"
@@ -90,18 +91,47 @@ func (r *fakeRepository) Events(_ context.Context, orderID uuid.UUID) ([]Event, 
 	return r.events[orderID], nil
 }
 
-func (r *fakeRepository) ExpireUnpaid(_ context.Context, now time.Time) error {
+func (r *fakeRepository) ExpireUnpaid(_ context.Context, now time.Time) ([]Order, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var expired []Order
 	for id, o := range r.orders {
 		if o.Status == StatusApproved && !o.PaymentDeadline.After(now) {
 			from := StatusApproved
 			o.Status, o.StatusReason = StatusCancelled, "Payment deadline passed."
 			r.orders[id] = o
 			r.events[id] = append(r.events[id], Event{FromStatus: &from, ToStatus: StatusCancelled, ActorType: ActorSystem})
+			expired = append(expired, o)
 		}
 	}
+	return expired, nil
+}
+
+type fakeNotifier struct {
+	notification.Service
+	mu     sync.Mutex
+	events []notification.Event
+}
+
+func (f *fakeNotifier) Notify(_ context.Context, e notification.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, e)
 	return nil
+}
+
+func (f *fakeNotifier) last(t *testing.T, typ string) notification.Event {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.events) == 0 || f.events[len(f.events)-1].Type != typ {
+		t.Fatalf("notifications = %+v, want last of type %s", f.events, typ)
+	}
+	return f.events[len(f.events)-1]
+}
+
+func notifierOf(svc *service) *fakeNotifier {
+	return svc.notifier.(*fakeNotifier)
 }
 
 type fakeTrips struct {
@@ -132,7 +162,7 @@ func newTestService(c *clock) *service {
 		"tokyo":  {ID: uuid.New(), JastiperID: jastiperID, Slug: "tokyo", Status: trip.StatusOpen, RequestDeadline: deadline},
 		"closed": {ID: uuid.New(), JastiperID: jastiperID, Slug: "closed", Status: trip.StatusClosed, RequestDeadline: deadline},
 	}}
-	return newService(newFakeRepository(c.now), trips, c.now)
+	return newService(newFakeRepository(c.now), trips, &fakeNotifier{}, c.now)
 }
 
 func newClock() *clock {
@@ -300,5 +330,51 @@ func TestListFiltersByStatus(t *testing.T) {
 	}
 	if len(page.Items) != 1 || page.Items[0].StatusReason != "Stok habis" {
 		t.Errorf("items = %+v, want the rejected order", page.Items)
+	}
+}
+
+func TestTransitionsNotifyTheOtherParty(t *testing.T) {
+	c := newClock()
+	svc := newTestService(c)
+	ctx := t.Context()
+	n := notifierOf(svc)
+
+	o := createOrder(t, svc)
+	e := n.last(t, notification.TypeOrderRequested)
+	if !slices.Equal(e.Recipients, []uuid.UUID{jastiperID}) || e.Data["orderCode"] != o.Code || e.Data["productName"] != "Tokyo Banana" {
+		t.Errorf("order.requested = %+v", e)
+	}
+
+	_, _ = svc.Approve(ctx, jastiperID, o.ID, 25_000, 15_000)
+	e = n.last(t, notification.TypeOrderApproved)
+	if !slices.Equal(e.Recipients, []uuid.UUID{buyerID}) || e.Data["total"] != int64(90_000) {
+		t.Errorf("order.approved = %+v", e)
+	}
+
+	rejected := createOrder(t, svc)
+	_, _ = svc.Reject(ctx, jastiperID, rejected.ID, "Stok habis")
+	if e = n.last(t, notification.TypeOrderRejected); e.Data["reason"] != "Stok habis" {
+		t.Errorf("order.rejected = %+v", e)
+	}
+
+	cancelled := createOrder(t, svc)
+	_, _ = svc.Cancel(ctx, buyerID, cancelled.ID, "Salah pesan")
+	if e = n.last(t, notification.TypeOrderCancelled); !slices.Equal(e.Recipients, []uuid.UUID{jastiperID}) {
+		t.Errorf("order.cancelled by buyer = %+v", e)
+	}
+
+	count := len(n.events)
+	_, _ = svc.MarkPaid(ctx, rejected.ID)
+	if len(n.events) != count {
+		t.Errorf("a refused transition notified: %+v", n.events[count:])
+	}
+
+	c.t = c.t.Add(paymentWindow)
+	if _, err := svc.List(ctx, buyerID, ListParams{Limit: 20}); err != nil {
+		t.Fatal(err)
+	}
+	e = n.last(t, notification.TypeOrderCancelled)
+	if !slices.Equal(e.Recipients, []uuid.UUID{buyerID, jastiperID}) || e.Data["orderId"] != o.ID || e.Data["reason"] != "Payment deadline passed." {
+		t.Errorf("order.cancelled on expiry = %+v", e)
 	}
 }

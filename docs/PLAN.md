@@ -23,11 +23,11 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: remaining      | To do. CI checks                                                                                    |
 | F01 Auth & User          | Partial. Register, login, refresh, logout, `GET /me` done; profile, account status, `create-admin` to do |
 | F02 Trip & Catalog       | Partial. Create, list, get, close, my trips done; capacity, edit, cancel, catalog to do             |
-| F03 Order                | Partial. State machine, request, approve, reject, cancel done; capacity, photo, notifications, per-trip inbox to do |
+| F03 Order                | Partial. State machine, request, approve, reject, cancel, notifications done; capacity, photo, per-trip inbox to do |
 | F04 Payment & Escrow     | Partial. Fake gateway checkout, ledger, release, wallet balance done; refunds, payouts, wallet history, auto-release to do |
 | F05 Shipment             | Partial. Ship, get, confirm receipt done; proof photo to do                                         |
 | F06 Dispute              | To do                                                                                              |
-| F07 Notification         | Partial. Endpoints, `Notify`, `AdminIDs` done; wiring into Order, Payment, Shipment, Dispute to do  |
+| F07 Notification         | Partial. Endpoints, `Notify`, order/payment/shipment events done; refund, dispute, payout events to do |
 | F08 Admin                | To do                                                                                              |
 
 ## 2. Scope decisions

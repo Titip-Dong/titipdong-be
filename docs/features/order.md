@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------- |
 | Package | `internal/order`                                                             |
 | Tag     | `order`                                                                      |
-| Status  | Partial: state machine and endpoints done; capacity, photo, notifications, trip inbox to do |
+| Status  | Partial: state machine, endpoints, notifications done; capacity, photo, trip inbox to do |
 
 ## Overview
 
@@ -307,12 +307,12 @@ Done:
 - [x] Order code generator (`TD-XXXXXX`, unique, retry on conflict).
 - [x] `createOrder`, `listOrders`, `getOrder` (with timeline), `approveOrder`, `rejectOrder`, `cancelOrder`.
 - [x] Unpaid orders past the deadline are cancelled on read and on checkout.
+- [x] Notifications (F07) inside each transition's transaction, including the expiry on read.
 
 Remaining:
 
 - [ ] Capacity: `trip.Reserve` on create, `trip.Release` on reject, cancel, expiry, and refund.
 - [ ] Transition `shipped → delivered` by the system, for auto-release.
-- [ ] Notifications (F07) inside each transition's transaction.
 - [ ] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
 - [ ] `GET /me/trips/{id}/orders`.
 - [ ] Job `orders.expire_unpaid`.
