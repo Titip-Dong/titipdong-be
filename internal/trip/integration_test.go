@@ -249,3 +249,62 @@ func TestListDateFilterQuery(t *testing.T) {
 		t.Error("the trip is missing without date filters")
 	}
 }
+
+func TestUpdateAndCancelQueries(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := database.Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := database.Migrate(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	user := func(role auth.Role) uuid.UUID {
+		u, err := auth.Provision(ctx, pool, auth.RegisterParams{
+			Name: string(role), Email: uuid.NewString() + "@test.local", Password: "password123", Role: role,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return u.ID
+	}
+	jastiper, buyer := user(auth.RoleJastiper), user(auth.RoleBuyer)
+	svc := NewService(pool, nil)
+	tr, err := svc.Create(ctx, jastiper, CreateParams{
+		Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",
+		DepartsOn: time.Now().AddDate(0, 0, 1), ReturnsOn: time.Now().AddDate(0, 0, 10),
+		RequestDeadline: time.Now().Add(72 * time.Hour), Capacity: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	title, city, capacity := "Jastip Osaka", "Osaka", 9
+	updated, err := svc.Update(ctx, jastiper, tr.ID, UpdateParams{Title: &title, DestinationCity: &city, Capacity: &capacity})
+	if err != nil || updated.Title != title || updated.DestinationCity != city || updated.Capacity != 9 || updated.Slug != tr.Slug {
+		t.Fatalf("Update() = %+v, %v", updated, err)
+	}
+
+	orderID := uuid.New()
+	_, err = pool.Exec(ctx, `INSERT INTO orders (id, code, trip_id, buyer_id, jastiper_id, product_name, quantity)
+		VALUES ($1, $2, $3, $4, $5, 'Item', 1)`, orderID, "TD-"+uuid.NewString()[:6], tr.ID, buyer, jastiper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Cancel(ctx, jastiper, tr.ID); !errors.Is(err, ErrActiveOrders) {
+		t.Fatalf("Cancel(requested order) error = %v, want ErrActiveOrders", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE orders SET status = 'rejected' WHERE id = $1`, orderID); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := svc.Cancel(ctx, jastiper, tr.ID); err != nil || got.Status != StatusCancelled {
+		t.Fatalf("Cancel(rejected order only) = %s, %v; want cancelled", got.Status, err)
+	}
+	if got, _ := svc.ByID(ctx, tr.ID); got.Status != StatusCancelled {
+		t.Errorf("stored status = %s, want cancelled", got.Status)
+	}
+}

@@ -116,6 +116,16 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}, h.deleteItem)
 
 	huma.Register(api, huma.Operation{
+		OperationID: "cancelTrip",
+		Method:      http.MethodPost,
+		Path:        "/trips/{id}/cancel",
+		Summary:     "Cancel a trip that has no active orders",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict},
+	}, h.cancel)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "updateTrip",
 		Method:      http.MethodPatch,
 		Path:        "/trips/{id}",
@@ -306,6 +316,17 @@ func (h *Handler) close(ctx context.Context, in *struct {
 	return &tripOutput{Body: toTripResponse(t)}, nil
 }
 
+func (h *Handler) cancel(ctx context.Context, in *struct {
+	ID uuid.UUID `path:"id"`
+}) (*tripOutput, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	t, err := h.svc.Cancel(ctx, p.UserID, in.ID)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return &tripOutput{Body: toTripResponse(t)}, nil
+}
+
 func (h *Handler) update(ctx context.Context, in *struct {
 	ID   uuid.UUID `path:"id"`
 	Body updateTripRequest
@@ -444,6 +465,10 @@ func mapError(err error) error {
 		return huma.Error409Conflict("Trip is already closed.")
 	case errors.Is(err, ErrItemNotFound):
 		return huma.Error404NotFound("Item not found.")
+	case errors.Is(err, ErrNotCancelable):
+		return huma.Error409Conflict("Only an open or closed trip can be cancelled.")
+	case errors.Is(err, ErrActiveOrders):
+		return huma.Error409Conflict("Trip still has active orders. Settle them before cancelling.")
 	case errors.Is(err, ErrCatalogLocked):
 		return huma.Error409Conflict("The catalog of a completed or cancelled trip cannot change.")
 	}

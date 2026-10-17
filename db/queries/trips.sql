@@ -77,3 +77,12 @@ UPDATE trips
 SET title = $2, description = $3, destination_city = $4, destination_country = $5, departs_on = $6,
     returns_on = $7, request_deadline = $8, capacity = $9, updated_at = now()
 WHERE id = $1;
+
+-- name: CountActiveTripOrders :one
+SELECT count(*) FROM orders
+WHERE trip_id = $1 AND status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed');
+
+-- name: CancelTrip :exec
+UPDATE trips
+SET status = 'cancelled', updated_at = now()
+WHERE id = $1;

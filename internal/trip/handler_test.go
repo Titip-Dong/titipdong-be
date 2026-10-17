@@ -213,3 +213,21 @@ func TestUpdateTripEndpoint(t *testing.T) {
 		t.Errorf("PATCH closed trip status = %d, want 409", status)
 	}
 }
+
+func TestCancelTripEndpoint(t *testing.T) {
+	app := newTestApp(t)
+	_, created := do(t, app, http.MethodPost, "/trips", "jastiper", createBody)
+	path := "/trips/" + created["id"].(string) + "/cancel"
+	if status, _ := do(t, app, http.MethodPost, path, "buyer", ""); status != http.StatusForbidden {
+		t.Errorf("cancel as buyer status = %d, want 403", status)
+	}
+	if status, body := do(t, app, http.MethodPost, path, "jastiper", ""); status != http.StatusOK || body["status"] != "cancelled" {
+		t.Fatalf("cancel status = %d, body = %v", status, body)
+	}
+	if status, _ := do(t, app, http.MethodPost, path, "jastiper", ""); status != http.StatusConflict {
+		t.Errorf("cancel twice status = %d, want 409", status)
+	}
+	if status, _ := do(t, app, http.MethodPost, "/trips/"+uuid.NewString()+"/cancel", "jastiper", ""); status != http.StatusNotFound {
+		t.Errorf("cancel unknown status = %d, want 404", status)
+	}
+}

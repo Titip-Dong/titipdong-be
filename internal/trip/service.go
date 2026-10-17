@@ -34,6 +34,8 @@ var (
 	ErrCapacityFull  = errors.New("trip capacity is full")
 	ErrItemNotFound  = errors.New("trip item not found")
 	ErrCatalogLocked = errors.New("trip catalog can no longer change")
+	ErrNotCancelable = errors.New("only an open or closed trip can be cancelled")
+	ErrActiveOrders  = errors.New("trip still has active orders")
 )
 
 const maxItemsPerTrip = 50
@@ -136,6 +138,8 @@ type Service interface {
 	BySlug(ctx context.Context, slug string) (Trip, error)
 	ByID(ctx context.Context, id uuid.UUID) (Trip, error)
 	Close(ctx context.Context, jastiperID, id uuid.UUID) (Trip, error)
+	// Cancel marks an open or closed trip without active orders as cancelled.
+	Cancel(ctx context.Context, jastiperID, id uuid.UUID) (Trip, error)
 	// Update edits an open trip; capacity cannot drop below the reserved items. The slug does not change.
 	Update(ctx context.Context, jastiperID, id uuid.UUID, p UpdateParams) (Trip, error)
 	// Reserve takes units of capacity under a row lock: ErrTripClosed unless the trip accepts requests,
@@ -316,6 +320,33 @@ func (s *service) Update(ctx context.Context, jastiperID, id uuid.UUID, p Update
 		return Trip{}, err
 	}
 	return s.repo.TripByID(ctx, id)
+}
+
+func (s *service) Cancel(ctx context.Context, jastiperID, id uuid.UUID) (Trip, error) {
+	var t Trip
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		// The row lock also blocks Reserve, so no order can be created while this runs.
+		if t, err = s.repo.Lock(ctx, id); err != nil {
+			return err
+		}
+		if t.JastiperID != jastiperID {
+			return ErrNotFound
+		}
+		if t.Status != StatusOpen && t.Status != StatusClosed {
+			return ErrNotCancelable
+		}
+		active, err := s.repo.ActiveOrders(ctx, id)
+		if err != nil {
+			return err
+		}
+		if active > 0 {
+			return ErrActiveOrders
+		}
+		t.Status = StatusCancelled
+		return s.repo.CancelTrip(ctx, id)
+	})
+	return t, err
 }
 
 func (s *service) validate(t Trip) error {

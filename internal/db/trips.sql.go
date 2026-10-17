@@ -29,6 +29,17 @@ func (q *Queries) AdjustTripReservedCapacity(ctx context.Context, arg AdjustTrip
 	return err
 }
 
+const cancelTrip = `-- name: CancelTrip :exec
+UPDATE trips
+SET status = 'cancelled', updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) CancelTrip(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, cancelTrip, id)
+	return err
+}
+
 const closeExpiredTrips = `-- name: CloseExpiredTrips :execrows
 UPDATE trips
 SET status = 'closed', updated_at = now()
@@ -75,6 +86,18 @@ func (q *Queries) CompleteReturnedTrips(ctx context.Context, today time.Time) (i
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const countActiveTripOrders = `-- name: CountActiveTripOrders :one
+SELECT count(*) FROM orders
+WHERE trip_id = $1 AND status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed')
+`
+
+func (q *Queries) CountActiveTripOrders(ctx context.Context, tripID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveTripOrders, tripID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const createTrip = `-- name: CreateTrip :exec

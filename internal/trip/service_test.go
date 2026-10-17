@@ -17,14 +17,15 @@ import (
 )
 
 type fakeRepository struct {
-	mu    sync.Mutex
-	trips map[uuid.UUID]Trip
-	items map[uuid.UUID]Item
-	now   func() time.Time
+	mu     sync.Mutex
+	trips  map[uuid.UUID]Trip
+	items  map[uuid.UUID]Item
+	active map[uuid.UUID]int64
+	now    func() time.Time
 }
 
 func newFakeRepository(now func() time.Time) *fakeRepository {
-	return &fakeRepository{trips: map[uuid.UUID]Trip{}, items: map[uuid.UUID]Item{}, now: now}
+	return &fakeRepository{trips: map[uuid.UUID]Trip{}, items: map[uuid.UUID]Item{}, active: map[uuid.UUID]int64{}, now: now}
 }
 
 func (r *fakeRepository) CreateItem(_ context.Context, it Item) error {
@@ -97,6 +98,21 @@ func (r *fakeRepository) AdjustReserved(_ context.Context, id uuid.UUID, units i
 	if t.ReservedCapacity < 0 || t.ReservedCapacity > t.Capacity {
 		return errors.New("reserved_capacity check violated")
 	}
+	r.trips[id] = t
+	return nil
+}
+
+func (r *fakeRepository) ActiveOrders(_ context.Context, tripID uuid.UUID) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.active[tripID], nil
+}
+
+func (r *fakeRepository) CancelTrip(_ context.Context, id uuid.UUID) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t := r.trips[id]
+	t.Status = StatusCancelled
 	r.trips[id] = t
 	return nil
 }
@@ -597,5 +613,35 @@ func TestUpdate(t *testing.T) {
 	}
 	if _, err := svc.Update(ctx, jastiperID, tr.ID, UpdateParams{Title: ptr("X")}); !errors.Is(err, ErrNotOpen) {
 		t.Errorf("Update(closed) error = %v, want ErrNotOpen", err)
+	}
+}
+
+func TestCancel(t *testing.T) {
+	svc := newTestService()
+	repo := svc.repo.(*fakeRepository)
+	ctx := t.Context()
+	jastiperID := uuid.New()
+	busy, _ := svc.Create(ctx, jastiperID, validParams())
+	repo.active[busy.ID] = 1
+	if _, err := svc.Cancel(ctx, jastiperID, busy.ID); !errors.Is(err, ErrActiveOrders) {
+		t.Errorf("Cancel(active orders) error = %v, want ErrActiveOrders", err)
+	}
+
+	idle, _ := svc.Create(ctx, jastiperID, validParams())
+	if _, err := svc.Cancel(ctx, uuid.New(), idle.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Cancel(other jastiper) error = %v, want ErrNotFound", err)
+	}
+	if _, err := svc.Close(ctx, jastiperID, idle.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Cancel(ctx, jastiperID, idle.ID)
+	if err != nil || got.Status != StatusCancelled {
+		t.Fatalf("Cancel(closed, idle) = %s, %v; want cancelled", got.Status, err)
+	}
+	if _, err := svc.Cancel(ctx, jastiperID, idle.ID); !errors.Is(err, ErrNotCancelable) {
+		t.Errorf("Cancel(again) error = %v, want ErrNotCancelable", err)
+	}
+	if err := svc.Reserve(ctx, idle.ID, 1); !errors.Is(err, ErrTripClosed) {
+		t.Errorf("Reserve(cancelled) error = %v, want ErrTripClosed", err)
 	}
 }

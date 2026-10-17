@@ -39,6 +39,9 @@ type repository interface {
 	// AdjustReserved adds units (negative to release) to reserved_capacity.
 	AdjustReserved(ctx context.Context, id uuid.UUID, units int) error
 	UpdateTrip(ctx context.Context, t Trip) error
+	// ActiveOrders counts the trip's orders that are neither finished nor dropped.
+	ActiveOrders(ctx context.Context, tripID uuid.UUID) (int64, error)
+	CancelTrip(ctx context.Context, id uuid.UUID) error
 	CloseExpired(ctx context.Context, now time.Time) (int64, error)
 	// CompleteReturned completes closed trips that returned before today and have no active order.
 	CompleteReturned(ctx context.Context, today time.Time) (int64, error)
@@ -173,6 +176,14 @@ func (r *pgRepository) UpdateTrip(ctx context.Context, t Trip) error {
 		RequestDeadline:    t.RequestDeadline,
 		Capacity:           int32(t.Capacity),
 	})
+}
+
+func (r *pgRepository) ActiveOrders(ctx context.Context, tripID uuid.UUID) (int64, error) {
+	return r.q(ctx).CountActiveTripOrders(ctx, tripID)
+}
+
+func (r *pgRepository) CancelTrip(ctx context.Context, id uuid.UUID) error {
+	return r.q(ctx).CancelTrip(ctx, id)
 }
 
 func (r *pgRepository) CloseExpired(ctx context.Context, now time.Time) (int64, error) {
