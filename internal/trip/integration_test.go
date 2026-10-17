@@ -34,7 +34,7 @@ func TestConcurrentReserveNeverOverbooks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := NewService(pool)
+	svc := NewService(pool, nil)
 	tr, err := svc.Create(ctx, jastiper.ID, CreateParams{
 		Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",
 		DepartsOn: time.Now().AddDate(0, 0, 1), ReturnsOn: time.Now().AddDate(0, 0, 10),
@@ -106,7 +106,7 @@ func TestCloseExpiredKeepsTripsWithActiveOrders(t *testing.T) {
 		return u.ID
 	}
 	jastiper, buyer := user(auth.RoleJastiper), user(auth.RoleBuyer)
-	svc := NewService(pool)
+	svc := NewService(pool, nil)
 	newTrip := func() Trip {
 		t.Helper()
 		tr, err := svc.Create(ctx, jastiper, CreateParams{
@@ -142,5 +142,61 @@ func TestCloseExpiredKeepsTripsWithActiveOrders(t *testing.T) {
 	}
 	if got, _ := svc.ByID(ctx, busy.ID); got.Status != StatusClosed {
 		t.Errorf("trip with a requested order = %s, want closed", got.Status)
+	}
+}
+
+func TestCatalogQueries(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := database.Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := database.Migrate(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	jastiper, err := auth.Provision(ctx, pool, auth.RegisterParams{
+		Name: "Jastiper", Email: uuid.NewString() + "@test.local", Password: "password123", Role: auth.RoleJastiper,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(pool, nil)
+	tr, err := svc.Create(ctx, jastiper.ID, CreateParams{
+		Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",
+		DepartsOn: time.Now().AddDate(0, 0, 1), ReturnsOn: time.Now().AddDate(0, 0, 10),
+		RequestDeadline: time.Now().Add(72 * time.Hour), Capacity: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := func(s string) *string { return &s }
+	price := int64(30_000)
+	a, err := svc.AddItem(ctx, jastiper.ID, tr.ID, ItemParams{Name: name("A"), ReferencePrice: &price})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := svc.AddItem(ctx, jastiper.ID, tr.ID, ItemParams{Name: name("B"), Description: name("Kedua")})
+	if err != nil || a.Position != 0 || b.Position != 1 {
+		t.Fatalf("positions = %d, %d (%v); want 0, 1", a.Position, b.Position, err)
+	}
+	last := 5
+	if _, err := svc.UpdateItem(ctx, jastiper.ID, tr.ID, a.ID, ItemParams{Position: &last, Name: name("A2")}); err != nil {
+		t.Fatal(err)
+	}
+	items, err := svc.Items(ctx, tr.ID)
+	if err != nil || len(items) != 2 || items[0].ID != b.ID || items[1].Name != "A2" || *items[1].ReferencePrice != 30_000 || items[0].Description != "Kedua" {
+		t.Fatalf("items = %+v, %v", items, err)
+	}
+	if err := svc.DeleteItem(ctx, jastiper.ID, tr.ID, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	c, err := svc.AddItem(ctx, jastiper.ID, tr.ID, ItemParams{Name: name("C")})
+	if err != nil || c.Position != 2 {
+		t.Errorf("position after deleting the last item = %d, %v; want 2 (after B)", c.Position, err)
 	}
 }

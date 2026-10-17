@@ -16,6 +16,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/platform/audit"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -54,9 +55,9 @@ func newFixture(t *testing.T, now func() time.Time) fixture {
 		}
 		return u.ID
 	}
-	trips := trip.NewService(pool)
+	trips := trip.NewService(pool, nil)
 	notifier := notification.NewService(pool)
-	orders := order.NewService(pool, trips, notifier)
+	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
 	return fixture{
 		pool:     pool,
 		notifier: notifier,
@@ -82,7 +83,7 @@ func (f fixture) admin(t *testing.T) uuid.UUID {
 func (f fixture) approvedOrder(t *testing.T, quantity int, itemPrice, fee int64) order.Order {
 	t.Helper()
 	ctx := context.Background()
-	tr, err := trip.NewService(f.pool).Create(ctx, f.jastiper, trip.CreateParams{
+	tr, err := trip.NewService(f.pool, nil).Create(ctx, f.jastiper, trip.CreateParams{
 		Title:              "Jastip Test",
 		DestinationCity:    "Tokyo",
 		DestinationCountry: "JP",
@@ -107,7 +108,7 @@ func (f fixture) approvedOrder(t *testing.T, quantity int, itemPrice, fee int64)
 
 func (f fixture) remainingCapacity(t *testing.T, tripID uuid.UUID) int {
 	t.Helper()
-	tr, err := trip.NewService(f.pool).ByID(context.Background(), tripID)
+	tr, err := trip.NewService(f.pool, nil).ByID(context.Background(), tripID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +319,7 @@ func TestOrderCannotOverbookTrip(t *testing.T) {
 	f := newFixture(t, time.Now)
 	ctx := context.Background()
 	o := f.approvedOrder(t, 10, 10_000, 0)
-	tr, err := trip.NewService(f.pool).ByID(ctx, o.TripID)
+	tr, err := trip.NewService(f.pool, nil).ByID(ctx, o.TripID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,5 +649,23 @@ func TestPlatformTotals(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOrderPhotoFailureRollsBackReservation(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.approvedOrder(t, 2, 10_000, 0)
+	tr, err := trip.NewService(f.pool, nil).ByID(ctx, o.TripID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	photo := uuid.New()
+	// The fixture's upload service has no blob store, so attaching fails after the capacity was reserved.
+	if _, err := f.orders.Create(ctx, f.buyer, tr.Slug, order.CreateParams{ProductName: "X", Quantity: 3, PhotoUpload: &photo}); !errors.Is(err, upload.ErrUnavailable) {
+		t.Fatalf("Create(photo, no blob store) error = %v, want upload.ErrUnavailable", err)
+	}
+	if left := f.remainingCapacity(t, o.TripID); left != 8 {
+		t.Errorf("remaining capacity = %d, want 8: the failed order must not keep its reservation", left)
 	}
 }

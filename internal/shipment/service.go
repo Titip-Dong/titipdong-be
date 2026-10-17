@@ -12,6 +12,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -47,6 +48,7 @@ type Shipment struct {
 	HandoverNote   string
 	ShippedAt      time.Time
 	DeliveredAt    *time.Time
+	ProofKey       string
 	// AutoReleaseAt is set while the order is shipped: funds release then unless the buyer confirms or disputes.
 	AutoReleaseAt *time.Time
 }
@@ -56,6 +58,8 @@ type ShipParams struct {
 	CourierCode    string
 	TrackingNumber string
 	HandoverNote   string
+	// ProofUpload is an optional upload with purpose shipment_proof owned by the jastiper.
+	ProofUpload *uuid.UUID
 }
 
 type Service interface {
@@ -66,20 +70,28 @@ type Service interface {
 	AutoRelease(ctx context.Context) error
 }
 
-func NewService(pool *pgxpool.Pool, orders order.Service, payments payment.Service, notifier notification.Service) Service {
-	return newService(newRepository(pool), orders, payments, notifier, time.Now)
+// uploadAttacher is the part of upload.Service that shipments need.
+type uploadAttacher interface {
+	Attach(ctx context.Context, ownerID, id uuid.UUID, purpose upload.Purpose) (string, error)
+}
+
+func NewService(pool *pgxpool.Pool, orders order.Service, payments payment.Service, uploads uploadAttacher,
+	notifier notification.Service) Service {
+	return newService(newRepository(pool), orders, payments, uploads, notifier, time.Now)
 }
 
 type service struct {
 	repo     repository
 	orders   order.Service
 	payments payment.Service
+	uploads  uploadAttacher
 	notifier notification.Service
 	now      func() time.Time
 }
 
-func newService(repo repository, orders order.Service, payments payment.Service, notifier notification.Service, now func() time.Time) *service {
-	return &service{repo: repo, orders: orders, payments: payments, notifier: notifier, now: now}
+func newService(repo repository, orders order.Service, payments payment.Service, uploads uploadAttacher,
+	notifier notification.Service, now func() time.Time) *service {
+	return &service{repo: repo, orders: orders, payments: payments, uploads: uploads, notifier: notifier, now: now}
 }
 
 func (s *service) Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p ShipParams) (Shipment, error) {
@@ -109,6 +121,11 @@ func (s *service) Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p Shi
 		}
 		sh.OrderStatus = o.Status
 		sh.AutoReleaseAt = autoReleaseAt(sh)
+		if p.ProofUpload != nil {
+			if sh.ProofKey, err = s.uploads.Attach(ctx, jastiperID, *p.ProofUpload, upload.PurposeShipmentProof); err != nil {
+				return err
+			}
+		}
 		if err := s.repo.Create(ctx, sh); err != nil {
 			return err
 		}

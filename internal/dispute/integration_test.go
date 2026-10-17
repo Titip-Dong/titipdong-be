@@ -65,7 +65,7 @@ func newFixture(t *testing.T) fixture {
 		return u.ID
 	}
 	notifier := notification.NewService(pool)
-	orders := order.NewService(pool, trip.NewService(pool), notifier)
+	orders := order.NewService(pool, trip.NewService(pool, nil), fakeUploads{}, notifier)
 	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})
 	f := fixture{
 		pool: pool, orders: orders, payments: payments, notifier: notifier,
@@ -82,7 +82,7 @@ func newFixture(t *testing.T) fixture {
 func (f fixture) shippedOrder(t *testing.T) order.Order {
 	t.Helper()
 	ctx := context.Background()
-	tr, err := trip.NewService(f.pool).Create(ctx, f.jastiper, trip.CreateParams{
+	tr, err := trip.NewService(f.pool, nil).Create(ctx, f.jastiper, trip.CreateParams{
 		Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",
 		DepartsOn: time.Now().AddDate(0, 0, 1), ReturnsOn: time.Now().AddDate(0, 0, 10),
 		RequestDeadline: time.Now().Add(72 * time.Hour), Capacity: 10,

@@ -403,7 +403,7 @@ CREATE INDEX trips_jastiper_idx ON trips (jastiper_id, created_at DESC, id DESC)
 - `open`: accepting requests. `closed`: past the deadline or closed by the jastiper. `completed`: the return date has
   passed and no order is active (set by a job). `cancelled`: the trip will not happen (only without active orders).
 
-### `trip_items` (to add)
+### `trip_items` (exists)
 
 Popular items the jastiper offers on a trip (the catalog shown on the trip page).
 
@@ -424,7 +424,7 @@ CREATE INDEX trip_items_trip_idx ON trip_items (trip_id, position);
 
 ## 5. F03 Order
 
-### `orders` (exists, to extend: `photo_key`)
+### `orders` (exists)
 
 ```sql
 CREATE TABLE orders (
@@ -635,7 +635,7 @@ CREATE UNIQUE INDEX payouts_one_open_per_jastiper ON payouts (jastiper_id) WHERE
 
 ## 7. F05 Shipment
 
-### `shipments` (exists, to extend: `proof_key`)
+### `shipments` (exists)
 
 One row per order, created when the jastiper hands the item over.
 

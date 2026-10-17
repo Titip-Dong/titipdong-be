@@ -1,6 +1,6 @@
 -- name: CreateOrder :exec
-INSERT INTO orders (id, code, trip_id, buyer_id, jastiper_id, product_name, product_url, quantity, notes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
+INSERT INTO orders (id, code, trip_id, buyer_id, jastiper_id, product_name, product_url, quantity, notes, photo_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
 -- name: GetOrder :one
 SELECT sqlc.embed(o), t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name

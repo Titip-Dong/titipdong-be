@@ -13,8 +13,8 @@ import (
 )
 
 const createShipment = `-- name: CreateShipment :exec
-INSERT INTO shipments (order_id, method, courier_code, tracking_number, handover_note, shipped_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO shipments (order_id, method, courier_code, tracking_number, handover_note, shipped_at, proof_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type CreateShipmentParams struct {
@@ -24,6 +24,7 @@ type CreateShipmentParams struct {
 	TrackingNumber string
 	HandoverNote   string
 	ShippedAt      time.Time
+	ProofKey       *string
 }
 
 func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) error {
@@ -34,12 +35,13 @@ func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) 
 		arg.TrackingNumber,
 		arg.HandoverNote,
 		arg.ShippedAt,
+		arg.ProofKey,
 	)
 	return err
 }
 
 const getShipment = `-- name: GetShipment :one
-SELECT order_id, method, courier_code, tracking_number, handover_note, shipped_at, delivered_at, created_at, updated_at FROM shipments
+SELECT order_id, method, courier_code, tracking_number, handover_note, shipped_at, delivered_at, created_at, updated_at, proof_key FROM shipments
 WHERE order_id = $1
 `
 
@@ -56,6 +58,7 @@ func (q *Queries) GetShipment(ctx context.Context, orderID uuid.UUID) (Shipment,
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProofKey,
 	)
 	return i, err
 }

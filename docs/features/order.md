@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------- |
 | Package | `internal/order`                                                             |
 | Tag     | `order`                                                                      |
-| Status  | Partial: state machine, endpoints, notifications, capacity, trip inbox done; photo to do |
+| Status  | Partial: all endpoints done; concurrency integration test to do                          |
 
 ## Overview
 
@@ -153,7 +153,7 @@ users |o--o{ order_events : actor
 | `jastiper_id`      | `UUID` FK     | → `users.id`, `<> buyer_id`                              |
 | `product_name`     | `TEXT`        | ≤ 200                                                    |
 | `product_url`      | `TEXT`        | ≤ 2000, default `''`                                     |
-| `photo_key`        | `TEXT`        | Blob key, nullable (to add)                              |
+| `photo_key`        | `TEXT`        | Blob key, nullable                                       |
 | `quantity`         | `INTEGER`     | `> 0`; also the trip capacity this order reserves        |
 | `notes`            | `TEXT`        | ≤ 1000                                                   |
 | `item_price`       | `BIGINT`      | Per unit, set on approval                                |
@@ -189,7 +189,9 @@ users |o--o{ order_events : actor
 | `POST` | `/orders/{id}/cancel`       | `cancelOrder`        | `buyer` (owner)             | Done   | Before payment only                          |
 | `GET`  | `/me/trips/{id}/orders`     | `listTripOrders`     | `jastiper` (owner)          | Done   | Jastiper inbox for one trip; filter `status`; cursor; another jastiper's trip is 404 |
 
-`createOrder` gains an optional `photoUploadId`; order responses gain a signed `photoUrl`.
+`createOrder` takes an optional `photoUploadId` (an upload with purpose `order_photo` owned by the buyer, attached in
+the create transaction; upload errors map to 422/503 as in the upload module). Order responses carry a signed
+`photoUrl`, omitted when there is no photo.
 
 Invalid transitions return `409 Conflict`; a full trip returns `409` with `Trip is full.`
 
@@ -311,10 +313,10 @@ Done:
 - [x] Capacity: `trip.Reserve` on create, `trip.Release` on reject, cancel, expiry, and refund.
 - [x] Transition `shipped → delivered` by the system, for auto-release.
 - [x] `GET /me/trips/{id}/orders`.
+- [x] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
 - [x] Job `orders.expire_unpaid` (every minute, up to 100 orders a run, one transaction each); `listOrders` runs the
       same sweep and `getOrder` expires the order it reads.
 
 Remaining:
 
-- [ ] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
 - [ ] Integration test for concurrent transitions on the same order.

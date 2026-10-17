@@ -8,18 +8,25 @@ import (
 
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 )
 
 const tag = "shipment"
 
-type Handler struct {
-	svc Service
+// photoSigner turns a stored blob key into a short-lived read URL.
+type photoSigner interface {
+	ReadURL(key string) string
 }
 
-func NewHandler(svc Service) *Handler {
-	return &Handler{svc: svc}
+type Handler struct {
+	svc    Service
+	photos photoSigner
+}
+
+func NewHandler(svc Service, photos photoSigner) *Handler {
+	return &Handler{svc: svc, photos: photos}
 }
 
 func (h *Handler) RegisterRoutes(api huma.API) {
@@ -55,10 +62,11 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 }
 
 type shipRequest struct {
-	Method         string `json:"method" enum:"cod,courier"`
-	CourierCode    string `json:"courierCode,omitempty" maxLength:"20" doc:"Required for courier, e.g. jne, jnt, sicepat"`
-	TrackingNumber string `json:"trackingNumber,omitempty" maxLength:"50" doc:"Required for courier"`
-	HandoverNote   string `json:"handoverNote,omitempty" maxLength:"1000"`
+	Method         string     `json:"method" enum:"cod,courier"`
+	CourierCode    string     `json:"courierCode,omitempty" maxLength:"20" doc:"Required for courier, e.g. jne, jnt, sicepat"`
+	TrackingNumber string     `json:"trackingNumber,omitempty" maxLength:"50" doc:"Required for courier"`
+	HandoverNote   string     `json:"handoverNote,omitempty" maxLength:"1000"`
+	ProofUpload    *uuid.UUID `json:"proofUploadId,omitempty" doc:"Upload with purpose shipment_proof"`
 }
 
 type shipmentResponse struct {
@@ -70,6 +78,7 @@ type shipmentResponse struct {
 	HandoverNote   string     `json:"handoverNote"`
 	ShippedAt      time.Time  `json:"shippedAt"`
 	DeliveredAt    *time.Time `json:"deliveredAt,omitempty"`
+	ProofURL       string     `json:"proofUrl,omitempty" doc:"Short-lived signed URL of the handover proof"`
 	AutoReleaseAt  *time.Time `json:"autoReleaseAt,omitempty" doc:"While shipped: when funds release unless the buyer confirms or disputes"`
 }
 
@@ -82,11 +91,12 @@ func (h *Handler) ship(ctx context.Context, in *struct {
 	Body shipRequest
 }) (*shipmentOutput, error) {
 	p, _ := auth.PrincipalFrom(ctx)
-	return result(h.svc.Ship(ctx, p.UserID, in.ID, ShipParams{
+	return h.result(h.svc.Ship(ctx, p.UserID, in.ID, ShipParams{
 		Method:         Method(in.Body.Method),
 		CourierCode:    in.Body.CourierCode,
 		TrackingNumber: in.Body.TrackingNumber,
 		HandoverNote:   in.Body.HandoverNote,
+		ProofUpload:    in.Body.ProofUpload,
 	}))
 }
 
@@ -94,17 +104,17 @@ func (h *Handler) get(ctx context.Context, in *struct {
 	ID uuid.UUID `path:"id"`
 }) (*shipmentOutput, error) {
 	p, _ := auth.PrincipalFrom(ctx)
-	return result(h.svc.Get(ctx, order.Actor{ID: p.UserID, Type: order.ActorType(p.Role)}, in.ID))
+	return h.result(h.svc.Get(ctx, order.Actor{ID: p.UserID, Type: order.ActorType(p.Role)}, in.ID))
 }
 
 func (h *Handler) confirmReceipt(ctx context.Context, in *struct {
 	ID uuid.UUID `path:"id"`
 }) (*shipmentOutput, error) {
 	p, _ := auth.PrincipalFrom(ctx)
-	return result(h.svc.ConfirmReceipt(ctx, p.UserID, in.ID))
+	return h.result(h.svc.ConfirmReceipt(ctx, p.UserID, in.ID))
 }
 
-func result(s Shipment, err error) (*shipmentOutput, error) {
+func (h *Handler) result(s Shipment, err error) (*shipmentOutput, error) {
 	var inputErr *InputError
 	switch {
 	case errors.As(err, &inputErr):
@@ -116,7 +126,7 @@ func result(s Shipment, err error) (*shipmentOutput, error) {
 	case errors.Is(err, order.ErrInvalidTransition):
 		return nil, huma.Error409Conflict("Order status does not allow this action.")
 	case err != nil:
-		return nil, err
+		return nil, upload.MapError(err)
 	}
 	return &shipmentOutput{Body: shipmentResponse{
 		OrderID:        s.OrderID,
@@ -128,5 +138,6 @@ func result(s Shipment, err error) (*shipmentOutput, error) {
 		ShippedAt:      s.ShippedAt,
 		DeliveredAt:    s.DeliveredAt,
 		AutoReleaseAt:  s.AutoReleaseAt,
+		ProofURL:       h.photos.ReadURL(s.ProofKey),
 	}}, nil
 }

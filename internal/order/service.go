@@ -14,6 +14,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -90,6 +91,7 @@ type Order struct {
 	Status          Status
 	StatusReason    string
 	PaymentDeadline *time.Time
+	PhotoKey        string
 	CreatedAt       time.Time
 }
 
@@ -107,6 +109,8 @@ type CreateParams struct {
 	ProductURL  string
 	Quantity    int
 	Notes       string
+	// PhotoUpload is an optional upload with purpose order_photo owned by the buyer.
+	PhotoUpload *uuid.UUID
 }
 
 type ListParams struct {
@@ -171,19 +175,25 @@ type Service interface {
 	ExpireUnpaid(ctx context.Context) error
 }
 
-func NewService(pool *pgxpool.Pool, trips trip.Service, notifier notification.Service) Service {
-	return newService(newRepository(pool), trips, notifier, time.Now)
+// uploadAttacher is the part of upload.Service that orders need.
+type uploadAttacher interface {
+	Attach(ctx context.Context, ownerID, id uuid.UUID, purpose upload.Purpose) (string, error)
+}
+
+func NewService(pool *pgxpool.Pool, trips trip.Service, uploads uploadAttacher, notifier notification.Service) Service {
+	return newService(newRepository(pool), trips, uploads, notifier, time.Now)
 }
 
 type service struct {
 	repo     repository
 	trips    trip.Service
+	uploads  uploadAttacher
 	notifier notification.Service
 	now      func() time.Time
 }
 
-func newService(repo repository, trips trip.Service, notifier notification.Service, now func() time.Time) *service {
-	return &service{repo: repo, trips: trips, notifier: notifier, now: now}
+func newService(repo repository, trips trip.Service, uploads uploadAttacher, notifier notification.Service, now func() time.Time) *service {
+	return &service{repo: repo, trips: trips, uploads: uploads, notifier: notifier, now: now}
 }
 
 func (s *service) Create(ctx context.Context, buyerID uuid.UUID, tripSlug string, p CreateParams) (Order, error) {
@@ -217,6 +227,13 @@ func (s *service) Create(ctx context.Context, buyerID uuid.UUID, tripSlug string
 					return ErrTripClosed
 				}
 				return err
+			}
+			if p.PhotoUpload != nil {
+				key, err := s.uploads.Attach(ctx, buyerID, *p.PhotoUpload, upload.PurposeOrderPhoto)
+				if err != nil {
+					return err
+				}
+				o.PhotoKey = key
 			}
 			if err := s.repo.CreateOrder(ctx, o); err != nil {
 				return err

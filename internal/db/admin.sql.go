@@ -59,7 +59,7 @@ func (q *Queries) CountUsersByRoleAndStatus(ctx context.Context) ([]CountUsersBy
 }
 
 const listAdminOrders = `-- name: ListAdminOrders :many
-SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
+SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, o.photo_key, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
 FROM orders o
 JOIN trips t ON t.id = o.trip_id
 JOIN users b ON b.id = o.buyer_id
@@ -120,6 +120,7 @@ func (q *Queries) ListAdminOrders(ctx context.Context, arg ListAdminOrdersParams
 			&i.Order.PaymentDeadline,
 			&i.Order.CreatedAt,
 			&i.Order.UpdatedAt,
+			&i.Order.PhotoKey,
 			&i.TripSlug,
 			&i.TripTitle,
 			&i.BuyerName,

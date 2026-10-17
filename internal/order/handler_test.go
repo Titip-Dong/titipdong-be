@@ -37,7 +37,7 @@ func newTestApp(t *testing.T) *fiber.App {
 	t.Helper()
 	app, api := httpserver.New()
 	api.UseMiddleware(auth.Middleware(api, fakeAuth{}))
-	NewHandler(newTestService(newClock())).RegisterRoutes(api)
+	NewHandler(newTestService(newClock()), fakeUploads{}).RegisterRoutes(api)
 	return app
 }
 

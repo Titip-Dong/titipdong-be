@@ -1,6 +1,6 @@
 -- name: CreateShipment :exec
-INSERT INTO shipments (order_id, method, courier_code, tracking_number, handover_note, shipped_at)
-VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO shipments (order_id, method, courier_code, tracking_number, handover_note, shipped_at, proof_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: GetShipment :one
 SELECT * FROM shipments

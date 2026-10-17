@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -26,12 +27,16 @@ const (
 )
 
 var (
-	ErrNotFound     = errors.New("trip not found")
-	ErrNotOpen      = errors.New("trip is not open")
-	ErrSlugTaken    = errors.New("trip slug taken")
-	ErrTripClosed   = errors.New("trip does not accept requests")
-	ErrCapacityFull = errors.New("trip capacity is full")
+	ErrNotFound      = errors.New("trip not found")
+	ErrNotOpen       = errors.New("trip is not open")
+	ErrSlugTaken     = errors.New("trip slug taken")
+	ErrTripClosed    = errors.New("trip does not accept requests")
+	ErrCapacityFull  = errors.New("trip capacity is full")
+	ErrItemNotFound  = errors.New("trip item not found")
+	ErrCatalogLocked = errors.New("trip catalog can no longer change")
 )
+
+const maxItemsPerTrip = 50
 
 type InputError struct {
 	Detail string
@@ -67,6 +72,27 @@ func (t Trip) AcceptsRequests(now time.Time) bool {
 	return t.Status == StatusOpen && now.Before(t.RequestDeadline) && t.RemainingCapacity() > 0
 }
 
+// Item is a catalog entry. ReferencePrice is indicative; the final price is set per order.
+type Item struct {
+	ID             uuid.UUID
+	TripID         uuid.UUID
+	Name           string
+	Description    string
+	PhotoKey       string
+	ReferencePrice *int64
+	Position       int
+}
+
+// ItemParams creates an item; on update only the non-nil fields change.
+type ItemParams struct {
+	Name           *string
+	Description    *string
+	ReferencePrice *int64
+	Position       *int
+	// PhotoUpload is an upload with purpose trip_item_photo owned by the jastiper; it replaces the photo.
+	PhotoUpload *uuid.UUID
+}
+
 type CreateParams struct {
 	Title              string
 	Description        string
@@ -99,6 +125,11 @@ type Service interface {
 	// Reserve takes units of capacity under a row lock: ErrTripClosed unless the trip accepts requests,
 	// ErrCapacityFull when fewer units remain.
 	Reserve(ctx context.Context, tripID uuid.UUID, units int) error
+	// Items is the trip's catalog in display order.
+	Items(ctx context.Context, tripID uuid.UUID) ([]Item, error)
+	AddItem(ctx context.Context, jastiperID, tripID uuid.UUID, p ItemParams) (Item, error)
+	UpdateItem(ctx context.Context, jastiperID, tripID, itemID uuid.UUID, p ItemParams) (Item, error)
+	DeleteItem(ctx context.Context, jastiperID, tripID, itemID uuid.UUID) error
 	// Release gives units of capacity back, never more than are reserved.
 	Release(ctx context.Context, tripID uuid.UUID, units int) error
 	// CloseExpired backs the trips.close_expired job: open trips past their request deadline close, and closed
@@ -106,13 +137,21 @@ type Service interface {
 	CloseExpired(ctx context.Context) error
 }
 
-func NewService(pool *pgxpool.Pool) Service {
-	return newService(newRepository(pool), time.Now)
+// uploadAttacher is the part of upload.Service the catalog needs; nil disables item photos.
+type uploadAttacher interface {
+	Attach(ctx context.Context, ownerID, id uuid.UUID, purpose upload.Purpose) (string, error)
+}
+
+func NewService(pool *pgxpool.Pool, uploads uploadAttacher) Service {
+	s := newService(newRepository(pool), time.Now)
+	s.uploads = uploads
+	return s
 }
 
 type service struct {
-	repo repository
-	now  func() time.Time
+	repo    repository
+	uploads uploadAttacher
+	now     func() time.Time
 }
 
 func newService(repo repository, now func() time.Time) *service {
@@ -276,6 +315,112 @@ func (s *service) CloseExpired(ctx context.Context) error {
 	}
 	if closed+completed > 0 {
 		slog.InfoContext(ctx, "trips_swept", "closed", closed, "completed", completed)
+	}
+	return nil
+}
+
+func (s *service) Items(ctx context.Context, tripID uuid.UUID) ([]Item, error) {
+	if _, err := s.repo.TripByID(ctx, tripID); err != nil {
+		return nil, err
+	}
+	return s.repo.Items(ctx, tripID)
+}
+
+func (s *service) AddItem(ctx context.Context, jastiperID, tripID uuid.UUID, p ItemParams) (Item, error) {
+	if p.Name == nil {
+		return Item{}, &InputError{Detail: "Name must not be blank."}
+	}
+	var it Item
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		if err := s.lockCatalog(ctx, jastiperID, tripID); err != nil {
+			return err
+		}
+		count, next, err := s.repo.ItemStats(ctx, tripID)
+		if err != nil {
+			return err
+		}
+		if count >= maxItemsPerTrip {
+			return &InputError{Detail: "A trip can list at most 50 items."}
+		}
+		it = Item{ID: uuid.Must(uuid.NewV7()), TripID: tripID, Position: next}
+		if err := s.applyItem(ctx, jastiperID, &it, p); err != nil {
+			return err
+		}
+		return s.repo.CreateItem(ctx, it)
+	})
+	return it, err
+}
+
+func (s *service) UpdateItem(ctx context.Context, jastiperID, tripID, itemID uuid.UUID, p ItemParams) (Item, error) {
+	var it Item
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		if err := s.lockCatalog(ctx, jastiperID, tripID); err != nil {
+			return err
+		}
+		var err error
+		if it, err = s.repo.Item(ctx, tripID, itemID); err != nil {
+			return err
+		}
+		if err := s.applyItem(ctx, jastiperID, &it, p); err != nil {
+			return err
+		}
+		return s.repo.UpdateItem(ctx, it)
+	})
+	return it, err
+}
+
+func (s *service) DeleteItem(ctx context.Context, jastiperID, tripID, itemID uuid.UUID) error {
+	return s.repo.WithTx(ctx, func(ctx context.Context) error {
+		if err := s.lockCatalog(ctx, jastiperID, tripID); err != nil {
+			return err
+		}
+		deleted, err := s.repo.DeleteItem(ctx, tripID, itemID)
+		if err == nil && !deleted {
+			return ErrItemNotFound
+		}
+		return err
+	})
+}
+
+// lockCatalog locks the caller's trip and checks that its catalog can still change (open or closed).
+func (s *service) lockCatalog(ctx context.Context, jastiperID, tripID uuid.UUID) error {
+	t, err := s.repo.Lock(ctx, tripID)
+	if err != nil {
+		return err
+	}
+	if t.JastiperID != jastiperID {
+		return ErrNotFound
+	}
+	if t.Status != StatusOpen && t.Status != StatusClosed {
+		return ErrCatalogLocked
+	}
+	return nil
+}
+
+func (s *service) applyItem(ctx context.Context, jastiperID uuid.UUID, it *Item, p ItemParams) error {
+	if p.Name != nil {
+		if it.Name = strings.TrimSpace(*p.Name); it.Name == "" {
+			return &InputError{Detail: "Name must not be blank."}
+		}
+	}
+	if p.Description != nil {
+		it.Description = strings.TrimSpace(*p.Description)
+	}
+	if p.ReferencePrice != nil {
+		it.ReferencePrice = p.ReferencePrice
+	}
+	if p.Position != nil {
+		it.Position = *p.Position
+	}
+	if p.PhotoUpload != nil {
+		if s.uploads == nil {
+			return upload.ErrUnavailable
+		}
+		key, err := s.uploads.Attach(ctx, jastiperID, *p.PhotoUpload, upload.PurposeTripItemPhoto)
+		if err != nil {
+			return err
+		}
+		it.PhotoKey = key
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 )
 
@@ -130,6 +131,25 @@ func notifierOf(svc *service) *fakeNotifier {
 	return svc.notifier.(*fakeNotifier)
 }
 
+// fakeUploads attaches any upload except unknownUploadID and signs keys with a fixed prefix.
+type fakeUploads struct{}
+
+var unknownUploadID = uuid.New()
+
+func (fakeUploads) Attach(_ context.Context, _, id uuid.UUID, purpose upload.Purpose) (string, error) {
+	if id == unknownUploadID {
+		return "", upload.ErrNotFound
+	}
+	return string(purpose) + "/" + id.String() + ".jpg", nil
+}
+
+func (fakeUploads) ReadURL(key string) string {
+	if key == "" {
+		return ""
+	}
+	return "https://blob.test/" + key
+}
+
 type fakeTrips struct {
 	trip.Service
 	trips map[string]trip.Trip
@@ -201,7 +221,7 @@ func newTestService(c *clock) *service {
 		"tokyo":  {ID: uuid.New(), JastiperID: jastiperID, Slug: "tokyo", Status: trip.StatusOpen, RequestDeadline: deadline, Capacity: 10},
 		"closed": {ID: uuid.New(), JastiperID: jastiperID, Slug: "closed", Status: trip.StatusClosed, RequestDeadline: deadline, Capacity: 10},
 	}}
-	return newService(newFakeRepository(c.now), trips, &fakeNotifier{}, c.now)
+	return newService(newFakeRepository(c.now), trips, fakeUploads{}, &fakeNotifier{}, c.now)
 }
 
 func newClock() *clock {
@@ -568,5 +588,18 @@ func TestListForTrip(t *testing.T) {
 	}
 	if _, err := svc.ListForTrip(ctx, jastiperID, uuid.New(), ListParams{Limit: 20}); !errors.Is(err, trip.ErrNotFound) {
 		t.Errorf("ListForTrip(unknown trip) error = %v, want trip.ErrNotFound", err)
+	}
+}
+
+func TestCreateWithPhoto(t *testing.T) {
+	svc := newTestService(newClock())
+	ctx := t.Context()
+	photo := uuid.New()
+	o, err := svc.Create(ctx, buyerID, "tokyo", CreateParams{ProductName: "Kit Kat", Quantity: 1, PhotoUpload: &photo})
+	if err != nil || o.PhotoKey != "order_photo/"+photo.String()+".jpg" {
+		t.Fatalf("Create(photo) = %q, %v", o.PhotoKey, err)
+	}
+	if _, err := svc.Create(ctx, buyerID, "tokyo", CreateParams{ProductName: "X", Quantity: 1, PhotoUpload: &unknownUploadID}); !errors.Is(err, upload.ErrNotFound) {
+		t.Errorf("Create(unknown upload) error = %v, want upload.ErrNotFound", err)
 	}
 }

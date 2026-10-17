@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------- |
 | Package | `internal/trip`                                                        |
 | Tag     | `trip`                                                                 |
-| Status  | Partial: create, list, get, close, my trips, capacity done; edit, cancel, catalog to do |
+| Status  | Partial: create, list, get, close, my trips, capacity, catalog done; edit, cancel, date filters to do |
 
 ## Overview
 
@@ -114,7 +114,7 @@ trips ||--o{ orders : "reserves capacity"
 Indexes: `trips_browse_idx (departs_on, id) WHERE status = 'open'`, `trips_jastiper_idx (jastiper_id, created_at
 DESC, id DESC)`.
 
-### `trip_items` (to add)
+### `trip_items`
 
 | Column            | Type          | Notes                            |
 | ----------------- | ------------- | -------------------------------- |
@@ -138,15 +138,21 @@ DESC, id DESC)`.
 | `GET`    | `/me/trips`                     | `listMyTrips`     | `jastiper`         | Done   | The caller's trips                             |
 | `PATCH`  | `/trips/{id}`                   | `updateTrip`      | `jastiper` (owner) | To do  | Edit an open trip                              |
 | `POST`   | `/trips/{id}/cancel`            | `cancelTrip`      | `jastiper` (owner) | To do  | Cancel a trip without active orders            |
-| `GET`    | `/trips/{id}/items`             | `listTripItems`   | Public             | To do  | Catalog items in display order                 |
-| `POST`   | `/trips/{id}/items`             | `createTripItem`  | `jastiper` (owner) | To do  | Add a catalog item                             |
-| `PATCH`  | `/trips/{id}/items/{itemId}`    | `updateTripItem`  | `jastiper` (owner) | To do  | Edit a catalog item                            |
-| `DELETE` | `/trips/{id}/items/{itemId}`    | `deleteTripItem`  | `jastiper` (owner) | To do  | Remove a catalog item                          |
+| `GET`    | `/trips/{id}/items`             | `listTripItems`   | Public             | Done   | Catalog items in display order                 |
+| `POST`   | `/trips/{id}/items`             | `createTripItem`  | `jastiper` (owner) | Done   | Add a catalog item                             |
+| `PATCH`  | `/trips/{id}/items/{itemId}`    | `updateTripItem`  | `jastiper` (owner) | Done   | Edit a catalog item                            |
+| `DELETE` | `/trips/{id}/items/{itemId}`    | `deleteTripItem`  | `jastiper` (owner) | Done   | Remove a catalog item                          |
 
 `createTrip` takes `capacity` (required, 1–1000 items). Trip responses carry `capacity` and `remainingCapacity`
 (`capacity - reserved_capacity`); `acceptsRequests` is false when no capacity remains, and `listTrips` leaves full
-trips out. To do: `getTrip` embeds the catalog (`items`, each with a signed `photoUrl`); `listTrips` gains `from` /
-`to` filters on `departsOn`.
+trips out. `getTrip` embeds the catalog (`items`). To do: `listTrips` gains `from` / `to` filters on `departsOn`.
+
+Catalog items: `{ id, name, description, referencePrice, photoUrl, position }` (`description`, `referencePrice`,
+`photoUrl` omitted when empty). `createTripItem` / `updateTripItem` take `name` (1–120, required on create),
+`description` (≤ 1000), `referencePrice` (≥ 0), `position` (≥ 0; defaults to after the last item), and
+`photoUploadId` (purpose `trip_item_photo`, replaces the photo). `listTripItems` returns `{ items }` without a cursor,
+ordered by `position`, then creation. At most 50 items per trip (422 beyond). Editing the catalog of a `completed` or
+`cancelled` trip returns 409; another jastiper's trip returns 404; `deleteTripItem` returns 204.
 
 Lists use cursor pagination (`?limit=` default 20, max 100; `?cursor=`), responses `{ items, nextCursor }`.
 
@@ -256,6 +262,7 @@ Done:
 - [x] Migration adding `capacity` / `reserved_capacity`, backfilling `reserved_capacity` from existing active orders.
 - [x] `capacity` in create and responses, `remainingCapacity`; `Reserve` / `Release` under a row lock; integration
       test for concurrent `Reserve`.
+- [x] `trip_items` table and catalog CRUD with photos; `getTrip` embeds the catalog.
 - [x] Job `trips.close_expired` every 5 minutes (`open` → `closed` after the deadline, `closed` → `completed` after the
       return date with no active order).
 
@@ -263,4 +270,3 @@ Remaining:
 
 - [ ] `from` / `to` filters on `listTrips`.
 - [ ] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.
-- [ ] `trip_items` table and catalog CRUD with photos (`platform/blob`).

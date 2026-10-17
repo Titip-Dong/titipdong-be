@@ -35,7 +35,9 @@ func newTestApp(t *testing.T) *fiber.App {
 	t.Helper()
 	app, api := httpserver.New()
 	api.UseMiddleware(auth.Middleware(api, fakeAuth{jastiperID: uuid.New()}))
-	NewHandler(newTestService()).RegisterRoutes(api)
+	svc := newTestService()
+	svc.uploads = fakeUploads{}
+	NewHandler(svc, fakeUploads{}).RegisterRoutes(api)
 	return app
 }
 
@@ -128,5 +130,50 @@ func TestTripErrors(t *testing.T) {
 	do(t, app, http.MethodPost, "/trips/"+id+"/close", "jastiper", "")
 	if status, _ := do(t, app, http.MethodPost, "/trips/"+id+"/close", "jastiper", ""); status != http.StatusConflict {
 		t.Errorf("close twice status = %d, want 409", status)
+	}
+}
+
+func TestCatalogEndpoints(t *testing.T) {
+	app := newTestApp(t)
+	_, created := do(t, app, http.MethodPost, "/trips", "jastiper", createBody)
+	id, _ := created["id"].(string)
+	slug, _ := created["slug"].(string)
+	items := "/trips/" + id + "/items"
+
+	status, body := do(t, app, http.MethodPost, items, "jastiper", `{"name":"Tokyo Banana","referencePrice":45000,"photoUploadId":"`+uuid.NewString()+`"}`)
+	if status != http.StatusCreated || body["name"] != "Tokyo Banana" || body["photoUrl"] == nil || body["position"] != float64(0) {
+		t.Fatalf("create item status = %d, body = %v", status, body)
+	}
+	itemID, _ := body["id"].(string)
+	if status, body := do(t, app, http.MethodPatch, items+"/"+itemID, "jastiper", `{"description":"Isi 8"}`); status != http.StatusOK || body["description"] != "Isi 8" {
+		t.Errorf("update item status = %d, body = %v", status, body)
+	}
+	status, body = do(t, app, http.MethodGet, "/trips/"+slug, "", "")
+	if list, _ := body["items"].([]any); status != http.StatusOK || len(list) != 1 || body["capacity"] != float64(10) {
+		t.Errorf("getTrip status = %d, body = %v", status, body)
+	}
+	if status, body := do(t, app, http.MethodGet, items, "", ""); status != http.StatusOK {
+		t.Errorf("list items status = %d, body = %v", status, body)
+	}
+
+	tests := []struct {
+		name, method, path, token, body string
+		want                            int
+	}{
+		{"create as buyer", http.MethodPost, items, "buyer", `{"name":"X"}`, http.StatusForbidden},
+		{"create without token", http.MethodPost, items, "", `{"name":"X"}`, http.StatusUnauthorized},
+		{"negative price", http.MethodPost, items, "jastiper", `{"name":"X","referencePrice":-1}`, http.StatusUnprocessableEntity},
+		{"name too long", http.MethodPost, items, "jastiper", `{"name":"` + strings.Repeat("x", 121) + `"}`, http.StatusUnprocessableEntity},
+		{"update unknown", http.MethodPatch, items + "/" + uuid.NewString(), "jastiper", `{"name":"X"}`, http.StatusNotFound},
+		{"items of unknown trip", http.MethodGet, "/trips/" + uuid.NewString() + "/items", "", "", http.StatusNotFound},
+		{"delete", http.MethodDelete, items + "/" + itemID, "jastiper", "", http.StatusNoContent},
+		{"delete again", http.MethodDelete, items + "/" + itemID, "jastiper", "", http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if status, body := do(t, app, tt.method, tt.path, tt.token, tt.body); status != tt.want {
+				t.Errorf("status = %d, want %d (body %v)", status, tt.want, body)
+			}
+		})
 	}
 }

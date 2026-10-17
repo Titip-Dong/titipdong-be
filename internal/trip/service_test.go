@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -11,17 +12,73 @@ import (
 	"time"
 
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 )
 
 type fakeRepository struct {
 	mu    sync.Mutex
 	trips map[uuid.UUID]Trip
+	items map[uuid.UUID]Item
 	now   func() time.Time
 }
 
 func newFakeRepository(now func() time.Time) *fakeRepository {
-	return &fakeRepository{trips: map[uuid.UUID]Trip{}, now: now}
+	return &fakeRepository{trips: map[uuid.UUID]Trip{}, items: map[uuid.UUID]Item{}, now: now}
+}
+
+func (r *fakeRepository) CreateItem(_ context.Context, it Item) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.items[it.ID] = it
+	return nil
+}
+
+func (r *fakeRepository) Items(_ context.Context, tripID uuid.UUID) ([]Item, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []Item
+	for _, it := range r.items {
+		if it.TripID == tripID {
+			out = append(out, it)
+		}
+	}
+	slices.SortFunc(out, func(a, b Item) int { return cmp.Compare(a.Position, b.Position) })
+	return out, nil
+}
+
+func (r *fakeRepository) Item(_ context.Context, tripID, itemID uuid.UUID) (Item, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	it, ok := r.items[itemID]
+	if !ok || it.TripID != tripID {
+		return Item{}, ErrItemNotFound
+	}
+	return it, nil
+}
+
+func (r *fakeRepository) ItemStats(ctx context.Context, tripID uuid.UUID) (int, int, error) {
+	items, _ := r.Items(ctx, tripID)
+	next := 0
+	for _, it := range items {
+		next = max(next, it.Position+1)
+	}
+	return len(items), next, nil
+}
+
+func (r *fakeRepository) UpdateItem(ctx context.Context, it Item) error {
+	return r.CreateItem(ctx, it)
+}
+
+func (r *fakeRepository) DeleteItem(_ context.Context, tripID, itemID uuid.UUID) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	it, ok := r.items[itemID]
+	if !ok || it.TripID != tripID {
+		return false, nil
+	}
+	delete(r.items, itemID)
+	return true, nil
 }
 
 func (r *fakeRepository) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
@@ -376,5 +433,96 @@ func TestCloseExpired(t *testing.T) {
 	}
 	if got, _ := svc.ByID(ctx, tr.ID); got.Status != StatusCompleted {
 		t.Errorf("the day after returning status = %s, want completed", got.Status)
+	}
+}
+
+type fakeUploads struct{}
+
+func (fakeUploads) Attach(_ context.Context, _, id uuid.UUID, purpose upload.Purpose) (string, error) {
+	return string(purpose) + "/" + id.String() + ".jpg", nil
+}
+
+func (fakeUploads) ReadURL(key string) string {
+	if key == "" {
+		return ""
+	}
+	return "https://blob.test/" + key
+}
+
+func TestCatalog(t *testing.T) {
+	svc := newTestService()
+	svc.uploads = fakeUploads{}
+	ctx := t.Context()
+	jastiperID := uuid.New()
+	tr, err := svc.Create(ctx, jastiperID, validParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ptr := func(s string) *string { return &s }
+	price := int64(45_000)
+	photo := uuid.New()
+
+	first, err := svc.AddItem(ctx, jastiperID, tr.ID, ItemParams{Name: ptr(" Tokyo Banana "), ReferencePrice: &price, PhotoUpload: &photo})
+	if err != nil || first.Name != "Tokyo Banana" || first.Position != 0 || first.PhotoKey == "" {
+		t.Fatalf("AddItem() = %+v, %v", first, err)
+	}
+	second, err := svc.AddItem(ctx, jastiperID, tr.ID, ItemParams{Name: ptr("Royce")})
+	if err != nil || second.Position != 1 {
+		t.Fatalf("AddItem(second) = %+v, %v", second, err)
+	}
+	zero := 0
+	if _, err := svc.UpdateItem(ctx, jastiperID, tr.ID, second.ID, ItemParams{Position: &zero, Description: ptr("Cokelat")}); err != nil {
+		t.Fatal(err)
+	}
+	two := 2
+	if _, err := svc.UpdateItem(ctx, jastiperID, tr.ID, first.ID, ItemParams{Position: &two}); err != nil {
+		t.Fatal(err)
+	}
+	items, _ := svc.Items(ctx, tr.ID)
+	if len(items) != 2 || items[0].ID != second.ID || items[0].Description != "Cokelat" || items[1].Name != "Tokyo Banana" {
+		t.Errorf("items after reorder = %+v", items)
+	}
+
+	var inputErr *InputError
+	if _, err := svc.AddItem(ctx, jastiperID, tr.ID, ItemParams{}); !errors.As(err, &inputErr) {
+		t.Errorf("AddItem(no name) error = %v, want *InputError", err)
+	}
+	if _, err := svc.UpdateItem(ctx, jastiperID, tr.ID, first.ID, ItemParams{Name: ptr("  ")}); !errors.As(err, &inputErr) {
+		t.Errorf("UpdateItem(blank name) error = %v, want *InputError", err)
+	}
+	if _, err := svc.AddItem(ctx, uuid.New(), tr.ID, ItemParams{Name: ptr("X")}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("AddItem(other jastiper) error = %v, want ErrNotFound", err)
+	}
+	if err := svc.DeleteItem(ctx, jastiperID, tr.ID, uuid.New()); !errors.Is(err, ErrItemNotFound) {
+		t.Errorf("DeleteItem(unknown) error = %v, want ErrItemNotFound", err)
+	}
+	if err := svc.DeleteItem(ctx, jastiperID, tr.ID, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if items, _ := svc.Items(ctx, tr.ID); len(items) != 1 {
+		t.Errorf("items after delete = %d, want 1", len(items))
+	}
+
+	for i := range maxItemsPerTrip - 1 {
+		if _, err := svc.AddItem(ctx, jastiperID, tr.ID, ItemParams{Name: ptr(fmt.Sprint("Item ", i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := svc.AddItem(ctx, jastiperID, tr.ID, ItemParams{Name: ptr("One too many")}); !errors.As(err, &inputErr) {
+		t.Errorf("AddItem(51st) error = %v, want *InputError", err)
+	}
+
+	repo := svc.repo.(*fakeRepository)
+	locked := repo.trips[tr.ID]
+	locked.Status = StatusCompleted
+	repo.trips[tr.ID] = locked
+	if err := svc.DeleteItem(ctx, jastiperID, tr.ID, second.ID); !errors.Is(err, ErrCatalogLocked) {
+		t.Errorf("DeleteItem(completed trip) error = %v, want ErrCatalogLocked", err)
+	}
+
+	noUploads := newTestService()
+	tr2, _ := noUploads.Create(ctx, jastiperID, validParams())
+	if _, err := noUploads.AddItem(ctx, jastiperID, tr2.ID, ItemParams{Name: ptr("X"), PhotoUpload: &photo}); !errors.Is(err, upload.ErrUnavailable) {
+		t.Errorf("AddItem(photo, uploads disabled) error = %v, want upload.ErrUnavailable", err)
 	}
 }

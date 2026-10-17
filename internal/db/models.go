@@ -107,6 +107,7 @@ type Order struct {
 	PaymentDeadline *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	PhotoKey        *string
 }
 
 type OrderEvent struct {
@@ -194,6 +195,7 @@ type Shipment struct {
 	DeliveredAt    *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	ProofKey       *string
 }
 
 type Trip struct {
@@ -212,6 +214,18 @@ type Trip struct {
 	UpdatedAt          time.Time
 	Capacity           int32
 	ReservedCapacity   int32
+}
+
+type TripItem struct {
+	ID             uuid.UUID
+	TripID         uuid.UUID
+	Name           string
+	Description    *string
+	PhotoKey       *string
+	ReferencePrice *int64
+	Position       int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type Upload struct {
