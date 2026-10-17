@@ -10,6 +10,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/httpserver"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/google/uuid"
 )
 
@@ -131,6 +132,17 @@ func (fakeService) ListPayouts(context.Context, PayoutStatus, int, string) (Payo
 	return PayoutPage{}, nil
 }
 
+func (fakeService) Wallet(context.Context, uuid.UUID) (Wallet, error) {
+	return Wallet{Balance: 1000, Available: 400, PendingPayout: 600}, nil
+}
+
+func (fakeService) WalletEntries(_ context.Context, _ uuid.UUID, _ int, cursor string) (WalletPage, error) {
+	if _, err := pagination.DecodeID(cursor); err != nil {
+		return WalletPage{}, err
+	}
+	return WalletPage{}, nil
+}
+
 func TestPayoutEndpoints(t *testing.T) {
 	app, api := httpserver.New()
 	api.UseMiddleware(auth.Middleware(api, fakeAuth{}))
@@ -141,6 +153,10 @@ func TestPayoutEndpoints(t *testing.T) {
 		want                            int
 	}{
 		{"get account none", http.MethodGet, "/me/payout-account", "jastiper", "", http.StatusNotFound},
+		{"wallet", http.MethodGet, "/wallet", "jastiper", "", http.StatusOK},
+		{"wallet as buyer", http.MethodGet, "/wallet", "buyer", "", http.StatusForbidden},
+		{"wallet transactions", http.MethodGet, "/wallet/transactions?limit=5", "jastiper", "", http.StatusOK},
+		{"wallet transactions bad cursor", http.MethodGet, "/wallet/transactions?cursor=!!", "jastiper", "", http.StatusUnprocessableEntity},
 		{"save account", http.MethodPut, "/me/payout-account", "jastiper", account, http.StatusOK},
 		{"save account as buyer", http.MethodPut, "/me/payout-account", "buyer", account, http.StatusForbidden},
 		{"bad account number", http.MethodPut, "/me/payout-account", "jastiper", strings.Replace(account, "1234567890", "12-34", 1), http.StatusUnprocessableEntity},

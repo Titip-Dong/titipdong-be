@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------------- |
 | Package | `internal/payment`                                                                 |
 | Tag     | `payment`                                                                          |
-| Status  | Partial: checkout, settlement, ledger, release, refunds, payouts, wallet balance done; wallet history to do |
+| Status  | Partial: all endpoints done; concurrent release/refund integration test to do |
 
 ## Overview
 
@@ -185,8 +185,8 @@ users ||--o{ payouts : "requests (jastiper)"
 | ------ | ------------------------------- | ------------------------ | ------------------ | ------ | ----------------------------------------------- |
 | `POST` | `/orders/{id}/payments`         | `checkoutOrder`          | `buyer` (owner)    | Done   | Create (or reuse the pending) checkout for the order total |
 | `POST` | `/payments/{id}/simulate`       | `simulatePayment`        | `buyer` (owner)    | Done   | Fake gateway only: settle the payment           |
-| `GET`  | `/wallet`                       | `getWallet`              | `jastiper`         | Done   | Balance; gains `inEscrow` and `pendingPayout`    |
-| `GET`  | `/wallet/transactions`          | `listWalletTransactions` | `jastiper`         | To do  | Ledger entries of the caller's payable account; cursor |
+| `GET`  | `/wallet`                       | `getWallet`              | `jastiper`         | Done   | `{ balance, available, inEscrow, pendingPayout }` |
+| `GET`  | `/wallet/transactions`          | `listWalletTransactions` | `jastiper`         | Done   | Ledger entries of the caller's payable account; cursor |
 | `POST` | `/orders/{id}/cancel-paid`      | `cancelPaidOrder`        | `jastiper` (owner) | Done   | Body `{ reason }`: cancel a `paid` order and refund the buyer |
 | `GET`  | `/me/payout-account`            | `getPayoutAccount`       | `jastiper`         | Done   | Saved bank account (404 if none)                |
 | `PUT`  | `/me/payout-account`            | `savePayoutAccount`      | `jastiper`         | Done   | Body `{ bankName, accountNumber, accountName }` |
@@ -226,6 +226,14 @@ also used by the lists and the admin actions:
 `reference`, `rejectionReason`, and `decidedAt` are omitted until set. `GET /payouts` is newest first;
 `GET /admin/payouts` is oldest first (a queue), optional `status`. `paid` (`{ reference }`, 1–100) and `reject`
 (`{ reason }`, 1–500) return 409 once the payout is decided.
+
+### Wallet
+
+`getWallet`: `balance` is released earnings not paid out (`jastiper_payable`), `pendingPayout` the requested payouts,
+`available` = `balance − pendingPayout` (the most `requestPayout` accepts), and `inEscrow` the totals of the
+jastiper's orders still held in escrow, before the 5% fee. `listWalletTransactions` lists the payable account's
+entries newest first: `{ id, kind (release|payout), direction (credit|debit), amount, orderId, orderCode, payoutId,
+createdAt }`; the cursor is the last entry ID.
 
 Admin payout endpoints live in this package (tag `admin`) because they post to the ledger.
 
@@ -407,9 +415,9 @@ Done:
       `payout.paid` / `payout.rejected` notifications and audit rows; integration tests including concurrent requests.
 - [x] Audit `order.released` rows, with the actor who delivered the order (buyer, admin, or system).
 - [x] `PlatformTotals` ledger summary for F08 stats.
+- [x] `GET /wallet` with `available`, `inEscrow`, `pendingPayout`; `GET /wallet/transactions`.
 - [x] Integration tests: ledger balance, checkout after the deadline, payment → release.
 
 Remaining:
 
-- [ ] `GET /wallet` gains `inEscrow` and `pendingPayout`; `GET /wallet/transactions`.
 - [ ] Integration test: concurrent release and refund on one order (refund and payout postings are covered).
