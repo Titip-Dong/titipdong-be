@@ -155,6 +155,7 @@ func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config, store *
 
 	return []jobs.Job{
 		{Name: "uploads.purge_pending", Every: time.Hour, Run: uploadService.PurgePending},
+		{Name: "orders.expire_unpaid", Every: time.Minute, Run: orderService.ExpireUnpaid},
 		{Name: "orders.auto_release", Every: 5 * time.Minute, Run: shipmentService.AutoRelease},
 		{Name: "auth.purge_tokens", Every: time.Hour, Run: authService.PurgeExpiredTokens},
 	}

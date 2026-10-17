@@ -310,10 +310,11 @@ Done:
 - [x] Notifications (F07) inside each transition's transaction, including the expiry on read.
 - [x] Capacity: `trip.Reserve` on create, `trip.Release` on reject, cancel, expiry, and refund.
 - [x] Transition `shipped → delivered` by the system, for auto-release.
+- [x] Job `orders.expire_unpaid` (every minute, up to 100 orders a run, one transaction each); `listOrders` runs the
+      same sweep and `getOrder` expires the order it reads.
 
 Remaining:
 
 - [ ] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
 - [ ] `GET /me/trips/{id}/orders`.
-- [ ] Job `orders.expire_unpaid`.
 - [ ] Integration test for concurrent transitions on the same order.

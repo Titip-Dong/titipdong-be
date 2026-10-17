@@ -91,20 +91,16 @@ func (r *fakeRepository) Events(_ context.Context, orderID uuid.UUID) ([]Event, 
 	return r.events[orderID], nil
 }
 
-func (r *fakeRepository) ExpireUnpaid(_ context.Context, now time.Time) ([]Order, error) {
+func (r *fakeRepository) DueUnpaid(_ context.Context, now time.Time, limit int) ([]uuid.UUID, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var expired []Order
+	var due []uuid.UUID
 	for id, o := range r.orders {
-		if o.Status == StatusApproved && !o.PaymentDeadline.After(now) {
-			from := StatusApproved
-			o.Status, o.StatusReason = StatusCancelled, "Payment deadline passed."
-			r.orders[id] = o
-			r.events[id] = append(r.events[id], Event{FromStatus: &from, ToStatus: StatusCancelled, ActorType: ActorSystem})
-			expired = append(expired, o)
+		if o.Status == StatusApproved && !o.PaymentDeadline.After(now) && len(due) < limit {
+			due = append(due, id)
 		}
 	}
-	return expired, nil
+	return due, nil
 }
 
 type fakeNotifier struct {
@@ -490,5 +486,55 @@ func TestSystemDeliversOnlyShippedOrders(t *testing.T) {
 	_, _ = svc.MarkDisputed(ctx, buyerID, disputed.ID, "Rusak")
 	if _, err := svc.MarkDelivered(ctx, System, disputed.ID); !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("MarkDelivered(system, disputed) error = %v, want ErrInvalidTransition", err)
+	}
+}
+
+func TestExpireUnpaidJob(t *testing.T) {
+	c := newClock()
+	svc := newTestService(c)
+	ctx := t.Context()
+	late := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, late.ID, 10_000, 0)
+	paid := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, paid.ID, 10_000, 0)
+	_, _ = svc.MarkPaid(ctx, paid.ID)
+	c.t = c.t.Add(time.Hour)
+	fresh := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, fresh.ID, 10_000, 0)
+
+	c.t = c.t.Add(paymentWindow - time.Minute)
+	for range 2 {
+		if err := svc.ExpireUnpaid(ctx); err != nil {
+			t.Fatalf("ExpireUnpaid() error = %v", err)
+		}
+	}
+	status := func(id uuid.UUID) Status {
+		o, _, _ := svc.Get(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id)
+		return o.Status
+	}
+	if got := status(late.ID); got != StatusCancelled {
+		t.Errorf("late order = %s, want cancelled", got)
+	}
+	if got := status(paid.ID); got != StatusPaid {
+		t.Errorf("paid order = %s, want paid", got)
+	}
+	if got := status(fresh.ID); got != StatusApproved {
+		t.Errorf("order still inside its window = %s, want approved", got)
+	}
+	_, events, _ := svc.Get(ctx, Actor{ID: buyerID, Type: ActorBuyer}, late.ID)
+	cancels := 0
+	for _, e := range events {
+		if e.ToStatus == StatusCancelled {
+			cancels++
+			if e.ActorType != ActorSystem || e.Reason != deadlineReason {
+				t.Errorf("cancel event = %+v", e)
+			}
+		}
+	}
+	if cancels != 1 {
+		t.Errorf("cancel events after two runs = %d, want 1", cancels)
+	}
+	if got := reserved(svc, "tokyo"); got != 6 {
+		t.Errorf("reserved = %d, want 6 (paid and fresh orders keep theirs)", got)
 	}
 }

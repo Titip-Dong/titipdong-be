@@ -44,60 +44,6 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) error 
 	return err
 }
 
-const expireUnpaidOrders = `-- name: ExpireUnpaidOrders :many
-WITH expired AS (
-    UPDATE orders
-    SET status = 'cancelled', status_reason = 'Payment deadline passed.', updated_at = now()
-    WHERE status = 'approved' AND payment_deadline <= $1::timestamptz
-    RETURNING id, code, trip_id, buyer_id, jastiper_id, quantity, status_reason
-), events AS (
-    INSERT INTO order_events (order_id, from_status, to_status, actor_type, reason)
-    SELECT id, 'approved', 'cancelled', 'system', status_reason
-    FROM expired
-)
-SELECT id, code, trip_id, buyer_id, jastiper_id, quantity, status_reason
-FROM expired
-ORDER BY id
-`
-
-type ExpireUnpaidOrdersRow struct {
-	ID           uuid.UUID
-	Code         string
-	TripID       uuid.UUID
-	BuyerID      uuid.UUID
-	JastiperID   uuid.UUID
-	Quantity     int32
-	StatusReason string
-}
-
-func (q *Queries) ExpireUnpaidOrders(ctx context.Context, now time.Time) ([]ExpireUnpaidOrdersRow, error) {
-	rows, err := q.db.Query(ctx, expireUnpaidOrders, now)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ExpireUnpaidOrdersRow
-	for rows.Next() {
-		var i ExpireUnpaidOrdersRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.Code,
-			&i.TripID,
-			&i.BuyerID,
-			&i.JastiperID,
-			&i.Quantity,
-			&i.StatusReason,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getOrder = `-- name: GetOrder :one
 SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
 FROM orders o
@@ -286,6 +232,38 @@ func (q *Queries) ListOrders(ctx context.Context, arg ListOrdersParams) ([]ListO
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnpaidPastDeadline = `-- name: ListUnpaidPastDeadline :many
+SELECT id FROM orders
+WHERE status = 'approved' AND payment_deadline <= $1::timestamptz
+ORDER BY payment_deadline, id
+LIMIT $2
+`
+
+type ListUnpaidPastDeadlineParams struct {
+	Now      time.Time
+	RowLimit int32
+}
+
+func (q *Queries) ListUnpaidPastDeadline(ctx context.Context, arg ListUnpaidPastDeadlineParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listUnpaidPastDeadline, arg.Now, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
