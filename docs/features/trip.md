@@ -131,7 +131,7 @@ DESC, id DESC)`.
 
 | Method   | Path                            | operationId       | Auth               | Status | Description                                    |
 | -------- | ------------------------------- | ----------------- | ------------------ | ------ | ---------------------------------------------- |
-| `GET`    | `/trips`                        | `listTrips`       | Public             | Done   | Open trips accepting requests; filter `city`; cursor |
+| `GET`    | `/trips`                        | `listTrips`       | Public             | Done   | Open trips accepting requests; filter `city`, `from`, `to`; cursor |
 | `GET`    | `/trips/{slug}`                 | `getTrip`         | Public             | Done   | Trip detail                                    |
 | `POST`   | `/trips`                        | `createTrip`      | `jastiper`         | Done   | Create a trip                                  |
 | `POST`   | `/trips/{id}/close`             | `closeTrip`       | `jastiper` (owner) | Done   | Stop accepting requests                        |
@@ -145,7 +145,8 @@ DESC, id DESC)`.
 
 `createTrip` takes `capacity` (required, 1–1000 items). Trip responses carry `capacity` and `remainingCapacity`
 (`capacity - reserved_capacity`); `acceptsRequests` is false when no capacity remains, and `listTrips` leaves full
-trips out. `getTrip` embeds the catalog (`items`). To do: `listTrips` gains `from` / `to` filters on `departsOn`.
+trips out. `getTrip` embeds the catalog (`items`). `listTrips` filters `from` / `to` (`YYYY-MM-DD`, inclusive) on
+`departsOn`; `to` before `from` returns 422.
 
 Catalog items: `{ id, name, description, referencePrice, photoUrl, position }` (`description`, `referencePrice`,
 `photoUrl` omitted when empty). `createTripItem` / `updateTripItem` take `name` (1–120, required on create),
@@ -263,10 +264,10 @@ Done:
 - [x] `capacity` in create and responses, `remainingCapacity`; `Reserve` / `Release` under a row lock; integration
       test for concurrent `Reserve`.
 - [x] `trip_items` table and catalog CRUD with photos; `getTrip` embeds the catalog.
+- [x] `from` / `to` filters on `listTrips`.
 - [x] Job `trips.close_expired` every 5 minutes (`open` → `closed` after the deadline, `closed` → `completed` after the
       return date with no active order).
 
 Remaining:
 
-- [ ] `from` / `to` filters on `listTrips`.
 - [ ] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.

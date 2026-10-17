@@ -200,3 +200,52 @@ func TestCatalogQueries(t *testing.T) {
 		t.Errorf("position after deleting the last item = %d, %v; want 2 (after B)", c.Position, err)
 	}
 }
+
+func TestListDateFilterQuery(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := database.Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := database.Migrate(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	jastiper, err := auth.Provision(ctx, pool, auth.RegisterParams{
+		Name: "Jastiper", Email: uuid.NewString() + "@test.local", Password: "password123", Role: auth.RoleJastiper,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(pool, nil)
+	// A unique far-future departure keeps other tests' trips out of the window.
+	departs := time.Date(2090+time.Now().Nanosecond()%9, time.March, 1+time.Now().Nanosecond()%27, 0, 0, 0, 0, time.UTC)
+	city := "Datefilter-" + uuid.NewString()[:8]
+	tr, err := svc.Create(ctx, jastiper.ID, CreateParams{
+		Title: "Jastip Test", DestinationCity: city, DestinationCountry: "JP",
+		DepartsOn: departs, ReturnsOn: departs.AddDate(0, 0, 5), RequestDeadline: time.Now().Add(72 * time.Hour), Capacity: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(from, to time.Time) bool {
+		page, err := svc.List(ctx, ListParams{City: city, From: &from, To: &to, Limit: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(page.Items) == 1 && page.Items[0].ID == tr.ID
+	}
+	if !find(departs, departs) {
+		t.Error("a trip departing on both bounds is missing")
+	}
+	if find(departs.AddDate(0, 0, 1), departs.AddDate(0, 0, 9)) || find(departs.AddDate(0, 0, -9), departs.AddDate(0, 0, -1)) {
+		t.Error("a trip outside the window was listed")
+	}
+	if page, _ := svc.List(ctx, ListParams{City: city, Limit: 20}); len(page.Items) != 1 {
+		t.Error("the trip is missing without date filters")
+	}
+}

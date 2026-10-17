@@ -24,6 +24,8 @@ WHERE t.status = 'open'
   AND t.request_deadline > sqlc.arg(now)::timestamptz
   AND t.reserved_capacity < t.capacity
   AND t.destination_city ILIKE sqlc.arg(city)::text || '%'
+  AND (sqlc.narg(departs_from)::date IS NULL OR t.departs_on >= sqlc.narg(departs_from)::date)
+  AND (sqlc.narg(departs_to)::date IS NULL OR t.departs_on <= sqlc.narg(departs_to)::date)
   AND (t.departs_on, t.id) > (sqlc.arg(after_departs_on)::date, sqlc.arg(after_id)::uuid)
 ORDER BY t.departs_on, t.id
 LIMIT sqlc.arg(row_limit);

@@ -116,6 +116,8 @@ func TestTripErrors(t *testing.T) {
 		{"unknown slug", http.MethodGet, "/trips/nope", "", "", http.StatusNotFound},
 		{"bad cursor", http.MethodGet, "/trips?cursor=garbage", "", "", http.StatusUnprocessableEntity},
 		{"limit too high", http.MethodGet, "/trips?limit=500", "", "", http.StatusUnprocessableEntity},
+		{"bad from date", http.MethodGet, "/trips?from=10-10-2026", "", "", http.StatusUnprocessableEntity},
+		{"to before from", http.MethodGet, "/trips?from=2026-10-12&to=2026-10-11", "", "", http.StatusUnprocessableEntity},
 		{"close unknown", http.MethodPost, "/trips/" + uuid.NewString() + "/close", "jastiper", "", http.StatusNotFound},
 		{"my trips as buyer", http.MethodGet, "/me/trips", "buyer", "", http.StatusForbidden},
 	}

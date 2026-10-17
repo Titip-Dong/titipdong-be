@@ -105,9 +105,11 @@ type CreateParams struct {
 }
 
 type ListParams struct {
-	City   string
-	Limit  int
-	Cursor string
+	City string
+	// From and To filter departure dates, inclusive.
+	From, To *time.Time
+	Limit    int
+	Cursor   string
 }
 
 type Page struct {
@@ -206,9 +208,14 @@ func (s *service) List(ctx context.Context, p ListParams) (Page, error) {
 	if err != nil {
 		return Page{}, err
 	}
+	if p.From != nil && p.To != nil && p.To.Before(*p.From) {
+		return Page{}, &InputError{Detail: "The to date must not be before the from date."}
+	}
 	trips, err := s.repo.ListOpen(ctx, openFilter{
 		Now:   s.now(),
 		City:  escapeLike(strings.TrimSpace(p.City)),
+		From:  p.From,
+		To:    p.To,
 		After: after,
 		Limit: p.Limit + 1,
 	})

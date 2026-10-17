@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const adjustTripReservedCapacity = `-- name: AdjustTripReservedCapacity :exec
@@ -194,14 +195,18 @@ WHERE t.status = 'open'
   AND t.request_deadline > $1::timestamptz
   AND t.reserved_capacity < t.capacity
   AND t.destination_city ILIKE $2::text || '%'
-  AND (t.departs_on, t.id) > ($3::date, $4::uuid)
+  AND ($3::date IS NULL OR t.departs_on >= $3::date)
+  AND ($4::date IS NULL OR t.departs_on <= $4::date)
+  AND (t.departs_on, t.id) > ($5::date, $6::uuid)
 ORDER BY t.departs_on, t.id
-LIMIT $5
+LIMIT $7
 `
 
 type ListOpenTripsParams struct {
 	Now            time.Time
 	City           string
+	DepartsFrom    pgtype.Date
+	DepartsTo      pgtype.Date
 	AfterDepartsOn time.Time
 	AfterID        uuid.UUID
 	RowLimit       int32
@@ -216,6 +221,8 @@ func (q *Queries) ListOpenTrips(ctx context.Context, arg ListOpenTripsParams) ([
 	rows, err := q.db.Query(ctx, listOpenTrips,
 		arg.Now,
 		arg.City,
+		arg.DepartsFrom,
+		arg.DepartsTo,
 		arg.AfterDepartsOn,
 		arg.AfterID,
 		arg.RowLimit,

@@ -236,10 +236,17 @@ func (h *Handler) create(ctx context.Context, in *struct{ Body createTripRequest
 
 func (h *Handler) list(ctx context.Context, in *struct {
 	City   string `query:"city" maxLength:"100" doc:"Destination city prefix, case-insensitive"`
+	From   string `query:"from" format:"date" doc:"Earliest departure date, inclusive"`
+	To     string `query:"to" format:"date" doc:"Latest departure date, inclusive"`
 	Limit  int    `query:"limit" default:"20" minimum:"1" maximum:"100"`
 	Cursor string `query:"cursor"`
 }) (*struct{ Body tripPage }, error) {
-	page, err := h.svc.List(ctx, ListParams{City: in.City, Limit: in.Limit, Cursor: in.Cursor})
+	from, err1 := optionalDate(in.From)
+	to, err2 := optionalDate(in.To)
+	if err := errors.Join(err1, err2); err != nil {
+		return nil, huma.Error422UnprocessableEntity("Dates must use the YYYY-MM-DD format.")
+	}
+	page, err := h.svc.List(ctx, ListParams{City: in.City, From: from, To: to, Limit: in.Limit, Cursor: in.Cursor})
 	if err != nil {
 		return nil, mapError(err)
 	}
@@ -359,6 +366,14 @@ func (h *Handler) toItemResponse(it Item) itemResponse {
 		ID: it.ID, Name: it.Name, Description: it.Description, ReferencePrice: it.ReferencePrice,
 		PhotoURL: h.photos.ReadURL(it.PhotoKey), Position: it.Position,
 	}
+}
+
+func optionalDate(s string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
+	d, err := time.Parse(dateLayout, s)
+	return &d, err
 }
 
 func mapError(err error) error {

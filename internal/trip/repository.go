@@ -11,14 +11,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type openFilter struct {
-	Now   time.Time
-	City  string
-	After pagination.Cursor
-	Limit int
+	Now  time.Time
+	City string
+	// From and To bound departs_on inclusively; nil leaves that side open.
+	From, To *time.Time
+	After    pagination.Cursor
+	Limit    int
 }
 
 type repository interface {
@@ -107,6 +110,8 @@ func (r *pgRepository) ListOpen(ctx context.Context, f openFilter) ([]Trip, erro
 	rows, err := r.q(ctx).ListOpenTrips(ctx, db.ListOpenTripsParams{
 		Now:            f.Now,
 		City:           f.City,
+		DepartsFrom:    toDate(f.From),
+		DepartsTo:      toDate(f.To),
 		AfterDepartsOn: f.After.At,
 		AfterID:        f.After.ID,
 		RowLimit:       int32(f.Limit),
@@ -215,6 +220,13 @@ func toItem(it db.TripItem) Item {
 		ID: it.ID, TripID: it.TripID, Name: it.Name, Description: deref(it.Description), PhotoKey: deref(it.PhotoKey),
 		ReferencePrice: it.ReferencePrice, Position: int(it.Position),
 	}
+}
+
+func toDate(t *time.Time) pgtype.Date {
+	if t == nil {
+		return pgtype.Date{}
+	}
+	return pgtype.Date{Time: *t, Valid: true}
 }
 
 func nonEmpty(s string) *string {

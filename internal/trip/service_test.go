@@ -171,7 +171,8 @@ func (r *fakeRepository) ListOpen(_ context.Context, f openFilter) ([]Trip, erro
 	var out []Trip
 	for _, t := range r.trips {
 		after := t.DepartsOn.After(f.After.At) || (t.DepartsOn.Equal(f.After.At) && t.ID.String() > f.After.ID.String())
-		if t.Status == StatusOpen && t.RequestDeadline.After(f.Now) && t.RemainingCapacity() > 0 && after &&
+		inRange := (f.From == nil || !t.DepartsOn.Before(*f.From)) && (f.To == nil || !t.DepartsOn.After(*f.To))
+		if t.Status == StatusOpen && t.RequestDeadline.After(f.Now) && t.RemainingCapacity() > 0 && after && inRange &&
 			strings.HasPrefix(strings.ToLower(t.DestinationCity), strings.ToLower(f.City)) {
 			out = append(out, t)
 		}
@@ -524,5 +525,29 @@ func TestCatalog(t *testing.T) {
 	tr2, _ := noUploads.Create(ctx, jastiperID, validParams())
 	if _, err := noUploads.AddItem(ctx, jastiperID, tr2.ID, ItemParams{Name: ptr("X"), PhotoUpload: &photo}); !errors.Is(err, upload.ErrUnavailable) {
 		t.Errorf("AddItem(photo, uploads disabled) error = %v, want upload.ErrUnavailable", err)
+	}
+}
+
+func TestListFiltersByDepartureDate(t *testing.T) {
+	svc := newTestService()
+	ctx := t.Context()
+	for i := range 3 {
+		p := validParams()
+		p.DepartsOn = p.DepartsOn.AddDate(0, 0, i) // Oct 10, 11, 12
+		if _, err := svc.Create(ctx, uuid.New(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	day := func(d int) *time.Time { v := time.Date(2026, 10, d, 0, 0, 0, 0, time.UTC); return &v }
+	page, err := svc.List(ctx, ListParams{From: day(11), To: day(12), Limit: 20})
+	if err != nil || len(page.Items) != 2 || !page.Items[0].DepartsOn.Equal(*day(11)) {
+		t.Fatalf("List(11..12) = %+v, %v; want the trips departing on the 11th and 12th", page.Items, err)
+	}
+	if page, _ := svc.List(ctx, ListParams{To: day(10), Limit: 20}); len(page.Items) != 1 {
+		t.Errorf("List(..10) = %d items, want 1", len(page.Items))
+	}
+	var inputErr *InputError
+	if _, err := svc.List(ctx, ListParams{From: day(12), To: day(11), Limit: 20}); !errors.As(err, &inputErr) {
+		t.Errorf("List(to before from) error = %v, want *InputError", err)
 	}
 }
