@@ -35,7 +35,9 @@ instead of calling this module over HTTP.
   `COOKIE_SECURE=false`), lifetime 30 days, only its SHA-256 hash is stored. Every use rotates it; presenting a token
   that was already rotated revokes the whole family.
 - Account status: `active` or `suspended`. Suspended users cannot log in or refresh, and suspension revokes their
-  refresh tokens. An access token already issued stays valid until it expires (at most 15 minutes).
+  refresh tokens. An access token already issued stays valid until it expires (at most 15 minutes). Login with the
+  right password for a suspended account returns 403 `This account is suspended.` (a wrong password stays 401, so
+  the status is never shown without the password); refresh returns 401 and revokes the family.
 - Missing or invalid token → 401 `Provide a valid access token.` Wrong role → 403
   `Your role cannot access this resource.`
 
@@ -88,10 +90,10 @@ refresh_tokens |o--o| refresh_tokens : replaced_by
 | `email`         | `TEXT`         | Stored lowercased, unique index on `LOWER(email)`            |
 | `password_hash` | `TEXT`         | Argon2id PHC string                                          |
 | `role`          | `VARCHAR(16)`  | `buyer`, `jastiper`, `admin`                                 |
-| `status`        | `TEXT`         | `active` (default) or `suspended` (to add)                   |
-| `phone`         | `TEXT`         | ≤ 20 chars, nullable (to add)                                |
+| `status`        | `TEXT`         | `active` (default) or `suspended`                            |
+| `phone`         | `TEXT`         | ≤ 20 chars, nullable                                         |
 | `created_at`    | `TIMESTAMPTZ`  | Default `now()`                                              |
-| `updated_at`    | `TIMESTAMPTZ`  | Set by the application (to add)                              |
+| `updated_at`    | `TIMESTAMPTZ`  | Set by the application                                       |
 
 ### `refresh_tokens`
 
@@ -172,7 +174,10 @@ Errors: `409` email already registered, `422` validation (blank name, role not `
 ### `POST /auth/login`
 
 Request (`LoginRequest`): `{ "email": "...", "password": "..." }`. Response `200` is the same `AuthResponse`.
-Errors: `401` `Email or password is incorrect.`, `422` validation.
+Errors: `401` `Email or password is incorrect.`, `403` `This account is suspended.`, `422` validation.
+
+The user object in every auth response and `GET /me` also carries `status` (`active`/`suspended`) and `phone`
+(omitted when not set).
 
 ### `GET /me`
 
@@ -346,10 +351,10 @@ Done:
 - [x] Refresh tokens with rotation and reuse detection, `POST /auth/refresh`, `POST /auth/logout`; register and login
       set the cookie.
 - [x] `cmd/api seed-demo` for demo accounts.
+- [x] Migration adding `users.status`, `phone`, `updated_at`; login and refresh reject suspended users.
 
 Remaining:
 
-- [ ] Migration adding `users.status`, `phone`, `updated_at`; login and refresh reject suspended users.
 - [ ] `SetStatus(ctx, userID, status)` for F08: refuses admins, revokes refresh tokens on suspend.
 - [ ] `PATCH /me` (name, phone, password change with the current password; a password change revokes all refresh
       tokens).

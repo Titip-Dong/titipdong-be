@@ -22,6 +22,13 @@ const (
 	RoleAdmin    Role = "admin"
 )
 
+type Status string
+
+const (
+	StatusActive    Status = "active"
+	StatusSuspended Status = "suspended"
+)
+
 func (r Role) valid() bool {
 	return r == RoleBuyer || r == RoleJastiper || r == RoleAdmin
 }
@@ -39,6 +46,7 @@ var (
 	ErrInvalidToken        = errors.New("invalid access token")
 	ErrInvalidRefreshToken = errors.New("invalid refresh token")
 	ErrUserNotFound        = errors.New("user not found")
+	ErrSuspended           = errors.New("account is suspended")
 )
 
 // InputError is a business-rule violation the caller can fix. Detail is safe to
@@ -56,6 +64,8 @@ type User struct {
 	Name      string
 	Email     string
 	Role      Role
+	Status    Status
+	Phone     string
 	CreatedAt time.Time
 }
 
@@ -158,13 +168,16 @@ func (s *service) Login(ctx context.Context, email, password string) (Session, e
 	if !verifyPassword(hash, password) {
 		return Session{}, ErrInvalidCredentials
 	}
+	if u.Status == StatusSuspended {
+		return Session{}, ErrSuspended
+	}
 	sess, _, err := s.session(ctx, u, uuid.New())
 	return sess, err
 }
 
 func (s *service) Refresh(ctx context.Context, refreshToken string) (Session, error) {
 	var sess Session
-	reused := false
+	reused, suspended := false, false
 	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
 		old, err := s.repo.RefreshTokenByHash(ctx, hashRefreshToken(refreshToken))
 		if err != nil {
@@ -195,6 +208,10 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (Session, er
 		if err != nil {
 			return err
 		}
+		if u.Status == StatusSuspended {
+			suspended = true
+			return s.repo.RevokeRefreshTokenFamily(ctx, old.FamilyID, now)
+		}
 		var newID uuid.UUID
 		sess, newID, err = s.session(ctx, u, old.FamilyID)
 		if err != nil || revoked {
@@ -202,7 +219,7 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (Session, er
 		}
 		return s.repo.RotateRefreshToken(ctx, old.ID, newID, now)
 	})
-	if err == nil && reused {
+	if err == nil && (reused || suspended) {
 		return Session{}, ErrInvalidRefreshToken
 	}
 	return sess, err

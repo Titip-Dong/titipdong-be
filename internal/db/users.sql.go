@@ -15,7 +15,7 @@ import (
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, name, email, password_hash, role)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, name, email, role, created_at
+RETURNING id, name, email, role, status, phone, created_at
 `
 
 type CreateUserParams struct {
@@ -31,6 +31,8 @@ type CreateUserRow struct {
 	Name      string
 	Email     string
 	Role      string
+	Status    string
+	Phone     *string
 	CreatedAt time.Time
 }
 
@@ -48,33 +50,48 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateU
 		&i.Name,
 		&i.Email,
 		&i.Role,
+		&i.Status,
+		&i.Phone,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, name, email, password_hash, role, created_at
+SELECT id, name, email, password_hash, role, status, phone, created_at
 FROM users
 WHERE LOWER(email) = LOWER($1)
 `
 
-func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
+type GetUserByEmailRow struct {
+	ID           uuid.UUID
+	Name         string
+	Email        string
+	PasswordHash string
+	Role         string
+	Status       string
+	Phone        *string
+	CreatedAt    time.Time
+}
+
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (GetUserByEmailRow, error) {
 	row := q.db.QueryRow(ctx, getUserByEmail, email)
-	var i User
+	var i GetUserByEmailRow
 	err := row.Scan(
 		&i.ID,
 		&i.Name,
 		&i.Email,
 		&i.PasswordHash,
 		&i.Role,
+		&i.Status,
+		&i.Phone,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, name, email, role, created_at
+SELECT id, name, email, role, status, phone, created_at
 FROM users
 WHERE id = $1
 `
@@ -84,6 +101,8 @@ type GetUserByIDRow struct {
 	Name      string
 	Email     string
 	Role      string
+	Status    string
+	Phone     *string
 	CreatedAt time.Time
 }
 
@@ -95,6 +114,8 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow
 		&i.Name,
 		&i.Email,
 		&i.Role,
+		&i.Status,
+		&i.Phone,
 		&i.CreatedAt,
 	)
 	return i, err

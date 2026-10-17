@@ -77,7 +77,7 @@ func (r *pgRepository) CreateUser(ctx context.Context, u newUser) (User, error) 
 		}
 		return User{}, err
 	}
-	return User{ID: row.ID, Name: row.Name, Email: row.Email, Role: Role(row.Role), CreatedAt: row.CreatedAt}, nil
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), nil
 }
 
 func (r *pgRepository) UserByEmail(ctx context.Context, email string) (User, string, error) {
@@ -85,7 +85,7 @@ func (r *pgRepository) UserByEmail(ctx context.Context, email string) (User, str
 	if err != nil {
 		return User{}, "", notFound(err)
 	}
-	return User{ID: row.ID, Name: row.Name, Email: row.Email, Role: Role(row.Role), CreatedAt: row.CreatedAt}, row.PasswordHash, nil
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), row.PasswordHash, nil
 }
 
 func (r *pgRepository) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -93,7 +93,7 @@ func (r *pgRepository) UserByID(ctx context.Context, id uuid.UUID) (User, error)
 	if err != nil {
 		return User{}, notFound(err)
 	}
-	return User{ID: row.ID, Name: row.Name, Email: row.Email, Role: Role(row.Role), CreatedAt: row.CreatedAt}, nil
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), nil
 }
 
 func (r *pgRepository) CreateRefreshToken(ctx context.Context, t refreshToken, hash []byte) error {
@@ -131,6 +131,14 @@ func (r *pgRepository) RevokeRefreshTokenFamily(ctx context.Context, familyID uu
 
 func (r *pgRepository) RefreshTokenFamilyActive(ctx context.Context, familyID uuid.UUID) (bool, error) {
 	return r.q(ctx).RefreshTokenFamilyActive(ctx, familyID)
+}
+
+func toUser(id uuid.UUID, name, email, role, status string, phone *string, createdAt time.Time) User {
+	u := User{ID: id, Name: name, Email: email, Role: Role(role), Status: Status(status), CreatedAt: createdAt}
+	if phone != nil {
+		u.Phone = *phone
+	}
+	return u
 }
 
 func notFound(err error) error {

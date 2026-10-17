@@ -233,4 +233,7 @@ type User struct {
 	PasswordHash string
 	Role         string
 	CreatedAt    time.Time
+	Status       string
+	Phone        *string
+	UpdatedAt    time.Time
 }

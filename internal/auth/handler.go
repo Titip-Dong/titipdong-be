@@ -41,7 +41,7 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Path:        "/auth/login",
 		Summary:     "Obtain a short-lived access token",
 		Tags:        []string{tag},
-		Errors:      []int{http.StatusUnauthorized, http.StatusUnprocessableEntity},
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
 	}, h.login)
 
 	huma.Register(api, huma.Operation{
@@ -90,6 +90,8 @@ type userResponse struct {
 	Name      string    `json:"name"`
 	Email     string    `json:"email" format:"email"`
 	Role      string    `json:"role" enum:"buyer,jastiper,admin"`
+	Status    string    `json:"status" enum:"active,suspended"`
+	Phone     string    `json:"phone,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -131,6 +133,8 @@ func (h *Handler) login(ctx context.Context, in *struct{ Body loginRequest }) (*
 	switch {
 	case errors.Is(err, ErrInvalidCredentials):
 		return nil, huma.Error401Unauthorized("Email or password is incorrect.")
+	case errors.Is(err, ErrSuspended):
+		return nil, huma.Error403Forbidden("This account is suspended.")
 	case err != nil:
 		return nil, err
 	}
@@ -200,5 +204,8 @@ func toAuthResponse(s Session) authResponse {
 }
 
 func toUserResponse(u User) userResponse {
-	return userResponse{ID: u.ID, Name: u.Name, Email: u.Email, Role: string(u.Role), CreatedAt: u.CreatedAt}
+	return userResponse{
+		ID: u.ID, Name: u.Name, Email: u.Email, Role: string(u.Role), Status: string(u.Status), Phone: u.Phone,
+		CreatedAt: u.CreatedAt,
+	}
 }

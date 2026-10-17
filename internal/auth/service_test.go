@@ -14,17 +14,19 @@ import (
 // fakeRepository is an in-memory repository with the same error contract as
 // pgRepository.
 type fakeRepository struct {
-	mu     sync.Mutex
-	users  map[uuid.UUID]newUser
-	tokens map[string]refreshToken
-	now    time.Time
+	mu        sync.Mutex
+	users     map[uuid.UUID]newUser
+	suspended map[uuid.UUID]bool
+	tokens    map[string]refreshToken
+	now       time.Time
 }
 
 func newFakeRepository() *fakeRepository {
 	return &fakeRepository{
-		users:  map[uuid.UUID]newUser{},
-		tokens: map[string]refreshToken{},
-		now:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		users:     map[uuid.UUID]newUser{},
+		suspended: map[uuid.UUID]bool{},
+		tokens:    map[string]refreshToken{},
+		now:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -118,7 +120,11 @@ func (r *fakeRepository) RefreshTokenFamilyActive(_ context.Context, familyID uu
 }
 
 func (r *fakeRepository) toUser(u newUser) User {
-	return User{ID: u.ID, Name: u.Name, Email: u.Email, Role: u.Role, CreatedAt: r.now}
+	status := StatusActive
+	if r.suspended[u.ID] {
+		status = StatusSuspended
+	}
+	return User{ID: u.ID, Name: u.Name, Email: u.Email, Role: u.Role, Status: status, CreatedAt: r.now}
 }
 
 const testSecret = "test-secret-that-is-at-least-32-bytes"
@@ -300,5 +306,32 @@ func TestLogoutRevokesToken(t *testing.T) {
 	}
 	if err := svc.Logout(t.Context(), "unknown"); err != nil {
 		t.Errorf("Logout(unknown) error = %v, want nil", err)
+	}
+}
+
+func TestSuspendedUserCannotLoginOrRefresh(t *testing.T) {
+	repo := newFakeRepository()
+	svc := newService(repo, newTokens([]byte(testSecret), accessTokenLifetime, func() time.Time { return repo.now }))
+	ctx := t.Context()
+	sess, err := svc.Register(ctx, RegisterParams{Name: "Budi", Email: "budi@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.User.Status != StatusActive {
+		t.Errorf("new user status = %s, want active", sess.User.Status)
+	}
+	repo.suspended[sess.User.ID] = true
+
+	if _, err := svc.Login(ctx, "budi@example.com", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("Login(suspended, wrong password) error = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Login(ctx, "budi@example.com", "rahasia123"); !errors.Is(err, ErrSuspended) {
+		t.Errorf("Login(suspended) error = %v, want ErrSuspended", err)
+	}
+	if _, err := svc.Refresh(ctx, sess.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh(suspended) error = %v, want ErrInvalidRefreshToken", err)
+	}
+	if active, _ := repo.RefreshTokenFamilyActive(ctx, repo.tokens[string(hashRefreshToken(sess.RefreshToken))].FamilyID); active {
+		t.Error("refresh family still active after a suspended refresh")
 	}
 }
