@@ -45,6 +45,8 @@ which, do not silently pick one.
    - `OperationID` and path exactly as in the doc table. JSON fields are camelCase; validation via struct tags
      (`minLength`, `maxLength`, `minimum`, `maximum`, `pattern`, `enum`, `format`).
    - Get the caller with `p, _ := auth.PrincipalFrom(ctx)`.
+   - Never embed a struct in a Huma input or response (`struct{ pageInput; ... }`): Huma silently drops its fields
+     from the parameters and the schema. Spell the fields out, then check `go run ./cmd/api openapi` for them.
    - Convert errors only in the module's `mapError(err)`: `InputError` → 422, `pagination.ErrInvalidCursor` → 422,
      `ErrNotFound` → 404, invalid state → 409. Unknown errors pass through unchanged (they become a logged 500).
    - Lists: input `limit` (default 20, max 100) + `cursor`; output `{ items, nextCursor }`; fetch `limit+1` rows and

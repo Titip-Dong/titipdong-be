@@ -25,3 +25,7 @@ WHERE id = $1;
 UPDATE payments
 SET status = 'expired', updated_at = now()
 WHERE id = $1;
+
+-- name: GetPaidPaymentByOrder :one
+SELECT * FROM payments
+WHERE order_id = $1 AND status = 'paid';

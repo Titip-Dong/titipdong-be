@@ -11,7 +11,10 @@ import (
 	"time"
 
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
+	"github.com/Titip-Dong/titipdong-be/internal/admin"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
+	"github.com/Titip-Dong/titipdong-be/internal/dispute"
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/blob"
@@ -68,6 +71,9 @@ func run(cfg config.Config) error {
 
 	if len(os.Args) > 1 && os.Args[1] == "seed-demo" {
 		return seedDemo(ctx, pool)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "create-admin" {
+		return createAdmin(ctx, pool, os.Args[2:])
 	}
 
 	store, err := blobStore(ctx, cfg)
@@ -133,15 +139,25 @@ func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config, store *
 	api.UseMiddleware(auth.Middleware(api, authService))
 	auth.NewHandler(authService, cfg.CookieSecure).RegisterRoutes(api)
 	upload.NewHandler(uploadService).RegisterRoutes(api)
-	tripService := trip.NewService(pool)
-	trip.NewHandler(tripService).RegisterRoutes(api)
-	orderService := order.NewService(pool, tripService)
-	order.NewHandler(orderService).RegisterRoutes(api)
-	paymentService := payment.NewService(pool, orderService, payment.FakeGateway{})
+	notificationService := notification.NewService(pool)
+	notification.NewHandler(notificationService).RegisterRoutes(api)
+	tripService := trip.NewService(pool, uploadService)
+	trip.NewHandler(tripService, uploadService).RegisterRoutes(api)
+	orderService := order.NewService(pool, tripService, uploadService, notificationService)
+	order.NewHandler(orderService, uploadService).RegisterRoutes(api)
+	paymentService := payment.NewService(pool, orderService, notificationService, payment.FakeGateway{})
 	payment.NewHandler(paymentService, cfg.PaymentGateway == "fake").RegisterRoutes(api)
-	shipment.NewHandler(shipment.NewService(pool, orderService, paymentService)).RegisterRoutes(api)
+	shipmentService := shipment.NewService(pool, orderService, paymentService, uploadService, notificationService)
+	shipment.NewHandler(shipmentService, uploadService).RegisterRoutes(api)
+	disputeService := dispute.NewService(pool, orderService, paymentService, uploadService, notificationService)
+	dispute.NewHandler(disputeService).RegisterRoutes(api)
+	admin.NewHandler(admin.NewService(pool, authService, paymentService)).RegisterRoutes(api)
 
 	return []jobs.Job{
 		{Name: "uploads.purge_pending", Every: time.Hour, Run: uploadService.PurgePending},
+		{Name: "orders.expire_unpaid", Every: time.Minute, Run: orderService.ExpireUnpaid},
+		{Name: "orders.auto_release", Every: 5 * time.Minute, Run: shipmentService.AutoRelease},
+		{Name: "auth.purge_tokens", Every: time.Hour, Run: authService.PurgeExpiredTokens},
+		{Name: "trips.close_expired", Every: 5 * time.Minute, Run: tripService.CloseExpired},
 	}
 }

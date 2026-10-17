@@ -116,6 +116,28 @@ Expected response:
 {"status":"ok"}
 ```
 
+## 5. Create the first admin
+
+Admins exist only through the CLI (there is no admin sign-up). Run it in a live pod: it reuses the pod's
+`DATABASE_URL`, and reading the password from stdin keeps it out of shell history. Never run `seed-demo` here; its
+accounts share the password `demo12345`.
+
+```bash
+kubectl exec -i -n titipdong deploy/titipdong-api -- sh -c \
+  'read -r ADMIN_PASSWORD; export ADMIN_PASSWORD; /titipdong-api create-admin -name "Admin" -email admin@<domain>'
+```
+
+Type the password (8–128 characters) and press Enter. Rerunning with an email already registered is refused.
+
+## 6. Frontend and API domains
+
+The refresh token is an `HttpOnly; SameSite=Lax` cookie on `/auth`. Browsers send it only when the frontend and the
+API are the same site, that is, under one registrable domain (for example `app.<domain>` and `api.<domain>`). With
+the frontend on `*.azurestaticapps.net` and the API on another domain, `POST /auth/refresh` gets no cookie and users
+are signed out on every reload and every 15 minutes. Put both behind custom domains of one parent domain, serve the
+API through the HTTPS Ingress, and set `CORS_ORIGINS` to the frontend origin before uploads are used: on start the
+API also copies `CORS_ORIGINS` into the storage account's CORS rules, without which browsers block photo uploads.
+
 For controlled monitoring, `/metrics` exposes Prometheus-format application and
 Go runtime metrics. It is not a readiness or liveness endpoint. The local
 Prometheus/Grafana setup and two-pod port-forward procedure are documented in

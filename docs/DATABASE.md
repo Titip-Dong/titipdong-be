@@ -323,7 +323,7 @@ users |o--o{ audit_logs : "acts in"
 
 ## 3. F01 Auth & User
 
-### `users` (exists, to extend: `status`, `phone`, `updated_at`)
+### `users` (exists)
 
 ```sql
 CREATE TABLE users (
@@ -368,7 +368,7 @@ Presenting a token that is already revoked means it was stolen or replayed, so t
 
 ## 4. F02 Trip & Catalog
 
-### `trips` (exists, to extend: `capacity`, `reserved_capacity`)
+### `trips` (exists)
 
 ```sql
 CREATE TABLE trips (
@@ -382,7 +382,7 @@ CREATE TABLE trips (
     departs_on          DATE NOT NULL,
     returns_on          DATE NOT NULL,
     request_deadline    TIMESTAMPTZ NOT NULL,          -- last moment buyers can request
-    capacity            INTEGER NOT NULL CHECK (capacity > 0),
+    capacity            INTEGER NOT NULL DEFAULT 20 CHECK (capacity > 0),  -- default only for pre-capacity code
     reserved_capacity   INTEGER NOT NULL DEFAULT 0,
     status              TEXT NOT NULL DEFAULT 'open'
                         CHECK (status IN ('open', 'closed', 'completed', 'cancelled')),
@@ -396,13 +396,14 @@ CREATE INDEX trips_jastiper_idx ON trips (jastiper_id, created_at DESC, id DESC)
 ```
 
 - Capacity is counted in items: an order reserves its `quantity`. The migration that adds the columns backfills
-  `reserved_capacity` from existing active orders.
+  `reserved_capacity` from orders not `rejected`, `cancelled`, or `refunded`, and raises `capacity` to at least that.
+  The `DEFAULT 20` keeps inserts from the previous release working during the rolling update.
 - `reserved_capacity` is changed only by `trip.Service.Reserve/Release`, called by Order under a row lock on the
   trip. The `CHECK` makes overbooking impossible even if application code is wrong.
 - `open`: accepting requests. `closed`: past the deadline or closed by the jastiper. `completed`: the return date has
   passed and no order is active (set by a job). `cancelled`: the trip will not happen (only without active orders).
 
-### `trip_items` (to add)
+### `trip_items` (exists)
 
 Popular items the jastiper offers on a trip (the catalog shown on the trip page).
 
@@ -423,7 +424,7 @@ CREATE INDEX trip_items_trip_idx ON trip_items (trip_id, position);
 
 ## 5. F03 Order
 
-### `orders` (exists, to extend: `photo_key`)
+### `orders` (exists)
 
 ```sql
 CREATE TABLE orders (
@@ -515,7 +516,7 @@ CREATE TABLE payments (
 CREATE UNIQUE INDEX payments_one_active_per_order ON payments (order_id) WHERE status IN ('pending', 'paid');
 ```
 
-### `refunds` (to add)
+### `refunds` (exists)
 
 ```sql
 CREATE TABLE refunds (
@@ -594,7 +595,7 @@ Postings (amounts for an order with `total` = Rp 1.000.000):
 
 The platform fee is `floor(total × 5 / 100)`; the remainder goes to the jastiper, so no rupiah is lost to rounding.
 
-### `payout_accounts` and `payouts` (to add)
+### `payout_accounts` and `payouts` (exist)
 
 A jastiper saves one bank account and requests payouts against their available balance (`jastiper_payable` minus
 payouts still `requested`). An admin transfers the money outside the system and marks the payout `paid`, which posts
@@ -619,8 +620,8 @@ CREATE TABLE payouts (
     account_number   TEXT NOT NULL,
     account_name     TEXT NOT NULL,
     status           TEXT NOT NULL DEFAULT 'requested' CHECK (status IN ('requested', 'paid', 'rejected')),
-    reference        TEXT,                              -- bank transfer reference, set when paid
-    rejection_reason TEXT,
+    reference        TEXT CHECK (char_length(reference) <= 100),  -- bank transfer reference, set when paid
+    rejection_reason TEXT CHECK (char_length(rejection_reason) <= 500),
     decided_by       UUID REFERENCES users (id),
     requested_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     decided_at       TIMESTAMPTZ,
@@ -634,7 +635,7 @@ CREATE UNIQUE INDEX payouts_one_open_per_jastiper ON payouts (jastiper_id) WHERE
 
 ## 7. F05 Shipment
 
-### `shipments` (exists, to extend: `proof_key`)
+### `shipments` (exists)
 
 One row per order, created when the jastiper hands the item over.
 
@@ -655,7 +656,7 @@ CREATE TABLE shipments (
 CREATE INDEX shipments_auto_release_idx ON shipments (shipped_at) WHERE delivered_at IS NULL;
 ```
 
-## 8. F06 Dispute (to add)
+## 8. F06 Dispute (exists)
 
 ```sql
 CREATE TABLE disputes (
@@ -698,13 +699,13 @@ CREATE INDEX dispute_messages_dispute_idx ON dispute_messages (dispute_id, id);
 
 A partial refund is not modelled: the decision is all-or-nothing, as in the business flow.
 
-## 9. F07 Notification (to add)
+## 9. F07 Notification (exists)
 
 ```sql
 CREATE TABLE notifications (
     id         UUID PRIMARY KEY,
     user_id    UUID NOT NULL REFERENCES users (id),
-    type       TEXT NOT NULL,                          -- e.g. order.approved, payment.received, dispute.resolved
+    type       TEXT NOT NULL CHECK (char_length(type) <= 32), -- e.g. order.approved, payment.received
     data       JSONB NOT NULL DEFAULT '{}',            -- IDs and values for the FE to render; no secrets
     read_at    TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

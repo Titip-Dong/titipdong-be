@@ -27,3 +27,28 @@ SELECT COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amoun
 FROM ledger_entries e
 JOIN ledger_accounts a ON a.id = e.account_id
 WHERE a.kind = $1 AND e.order_id = $2;
+
+-- name: LedgerBalancesByKind :many
+SELECT a.kind,
+       COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS balance
+FROM ledger_accounts a
+LEFT JOIN ledger_entries e ON e.account_id = a.id
+GROUP BY a.kind;
+
+-- name: JastiperEscrowHeld :one
+SELECT COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS held
+FROM ledger_entries e
+JOIN ledger_accounts a ON a.id = e.account_id
+JOIN orders o ON o.id = e.order_id
+WHERE a.kind = 'escrow' AND o.jastiper_id = $1;
+
+-- name: ListUserAccountEntries :many
+SELECT e.id, e.direction, e.amount, e.order_id, e.created_at, t.kind AS transaction_kind, t.idempotency_key,
+       o.code AS order_code
+FROM ledger_entries e
+JOIN ledger_accounts a ON a.id = e.account_id
+JOIN ledger_transactions t ON t.id = e.transaction_id
+LEFT JOIN orders o ON o.id = e.order_id
+WHERE a.kind = sqlc.arg(kind)::text AND a.user_id = sqlc.arg(user_id)::uuid AND e.id < sqlc.arg(before_id)::bigint
+ORDER BY e.id DESC
+LIMIT sqlc.arg(row_limit);

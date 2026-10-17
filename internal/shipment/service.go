@@ -5,11 +5,14 @@ package shipment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,6 +22,11 @@ type Method string
 const (
 	MethodCOD     Method = "cod"
 	MethodCourier Method = "courier"
+)
+
+const (
+	autoReleaseAfter = 7 * 24 * time.Hour
+	autoReleaseBatch = 100
 )
 
 var ErrNotFound = errors.New("shipment not found")
@@ -40,6 +48,9 @@ type Shipment struct {
 	HandoverNote   string
 	ShippedAt      time.Time
 	DeliveredAt    *time.Time
+	ProofKey       string
+	// AutoReleaseAt is set while the order is shipped: funds release then unless the buyer confirms or disputes.
+	AutoReleaseAt *time.Time
 }
 
 type ShipParams struct {
@@ -47,27 +58,40 @@ type ShipParams struct {
 	CourierCode    string
 	TrackingNumber string
 	HandoverNote   string
+	// ProofUpload is an optional upload with purpose shipment_proof owned by the jastiper.
+	ProofUpload *uuid.UUID
 }
 
 type Service interface {
 	Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p ShipParams) (Shipment, error)
 	Get(ctx context.Context, actor order.Actor, orderID uuid.UUID) (Shipment, error)
 	ConfirmReceipt(ctx context.Context, buyerID, orderID uuid.UUID) (Shipment, error)
+	// AutoRelease delivers and releases orders shipped more than 7 days ago without confirmation or dispute.
+	AutoRelease(ctx context.Context) error
 }
 
-func NewService(pool *pgxpool.Pool, orders order.Service, payments payment.Service) Service {
-	return newService(newRepository(pool), orders, payments, time.Now)
+// uploadAttacher is the part of upload.Service that shipments need.
+type uploadAttacher interface {
+	Attach(ctx context.Context, ownerID, id uuid.UUID, purpose upload.Purpose) (string, error)
+}
+
+func NewService(pool *pgxpool.Pool, orders order.Service, payments payment.Service, uploads uploadAttacher,
+	notifier notification.Service) Service {
+	return newService(newRepository(pool), orders, payments, uploads, notifier, time.Now)
 }
 
 type service struct {
 	repo     repository
 	orders   order.Service
 	payments payment.Service
+	uploads  uploadAttacher
+	notifier notification.Service
 	now      func() time.Time
 }
 
-func newService(repo repository, orders order.Service, payments payment.Service, now func() time.Time) *service {
-	return &service{repo: repo, orders: orders, payments: payments, now: now}
+func newService(repo repository, orders order.Service, payments payment.Service, uploads uploadAttacher,
+	notifier notification.Service, now func() time.Time) *service {
+	return &service{repo: repo, orders: orders, payments: payments, uploads: uploads, notifier: notifier, now: now}
 }
 
 func (s *service) Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p ShipParams) (Shipment, error) {
@@ -96,7 +120,22 @@ func (s *service) Ship(ctx context.Context, jastiperID, orderID uuid.UUID, p Shi
 			return err
 		}
 		sh.OrderStatus = o.Status
-		return s.repo.Create(ctx, sh)
+		sh.AutoReleaseAt = autoReleaseAt(sh)
+		if p.ProofUpload != nil {
+			if sh.ProofKey, err = s.uploads.Attach(ctx, jastiperID, *p.ProofUpload, upload.PurposeShipmentProof); err != nil {
+				return err
+			}
+		}
+		if err := s.repo.Create(ctx, sh); err != nil {
+			return err
+		}
+		return s.notifier.Notify(ctx, notification.Event{
+			Type:       notification.TypeOrderShipped,
+			Recipients: []uuid.UUID{o.BuyerID},
+			Data: map[string]any{
+				"orderId": o.ID, "orderCode": o.Code, "method": sh.Method, "trackingNumber": sh.TrackingNumber,
+			},
+		})
 	})
 	return sh, err
 }
@@ -111,20 +150,43 @@ func (s *service) Get(ctx context.Context, actor order.Actor, orderID uuid.UUID)
 		return Shipment{}, err
 	}
 	sh.OrderStatus = o.Status
+	sh.AutoReleaseAt = autoReleaseAt(sh)
 	return sh, nil
 }
 
 func (s *service) ConfirmReceipt(ctx context.Context, buyerID, orderID uuid.UUID) (Shipment, error) {
+	return s.deliver(ctx, order.Actor{ID: buyerID, Type: order.ActorBuyer}, orderID)
+}
+
+func (s *service) AutoRelease(ctx context.Context) error {
+	due, err := s.repo.DueForRelease(ctx, s.now().Add(-autoReleaseAfter), autoReleaseBatch)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, orderID := range due {
+		_, err := s.deliver(ctx, order.System, orderID)
+		switch {
+		case errors.Is(err, order.ErrInvalidTransition):
+			// Confirmed or disputed since the sweep read it.
+		case err != nil:
+			errs = append(errs, fmt.Errorf("auto-release order %s: %w", orderID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// deliver marks the order and shipment delivered and releases the escrow, in one transaction.
+func (s *service) deliver(ctx context.Context, actor order.Actor, orderID uuid.UUID) (Shipment, error) {
 	var sh Shipment
 	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
-		if _, err := s.orders.MarkDelivered(ctx, order.Actor{ID: buyerID, Type: order.ActorBuyer}, orderID); err != nil {
+		if _, err := s.orders.MarkDelivered(ctx, actor, orderID); err != nil {
 			return err
 		}
-		deliveredAt := s.now()
-		if err := s.repo.MarkDelivered(ctx, orderID, deliveredAt); err != nil {
+		if err := s.repo.MarkDelivered(ctx, orderID, s.now()); err != nil {
 			return err
 		}
-		o, err := s.payments.Release(ctx, orderID)
+		o, err := s.payments.Release(ctx, actor, orderID)
 		if err != nil {
 			return err
 		}
@@ -133,4 +195,12 @@ func (s *service) ConfirmReceipt(ctx context.Context, buyerID, orderID uuid.UUID
 		return err
 	})
 	return sh, err
+}
+
+func autoReleaseAt(sh Shipment) *time.Time {
+	if sh.OrderStatus != order.StatusShipped || sh.DeliveredAt != nil {
+		return nil
+	}
+	at := sh.ShippedAt.Add(autoReleaseAfter)
+	return &at
 }

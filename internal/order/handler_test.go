@@ -37,7 +37,7 @@ func newTestApp(t *testing.T) *fiber.App {
 	t.Helper()
 	app, api := httpserver.New()
 	api.UseMiddleware(auth.Middleware(api, fakeAuth{}))
-	NewHandler(newTestService(newClock())).RegisterRoutes(api)
+	NewHandler(newTestService(newClock()), fakeUploads{}).RegisterRoutes(api)
 	return app
 }
 
@@ -104,6 +104,7 @@ func TestOrderErrors(t *testing.T) {
 	}{
 		{"create as jastiper", http.MethodPost, "/trips/tokyo/orders", "jastiper", `{"productName":"X","quantity":1}`, http.StatusForbidden},
 		{"create on closed trip", http.MethodPost, "/trips/closed/orders", "buyer", `{"productName":"X","quantity":1}`, http.StatusConflict},
+		{"create beyond capacity", http.MethodPost, "/trips/tokyo/orders", "buyer", `{"productName":"X","quantity":50}`, http.StatusConflict},
 		{"create on unknown trip", http.MethodPost, "/trips/nope/orders", "buyer", `{"productName":"X","quantity":1}`, http.StatusNotFound},
 		{"zero quantity", http.MethodPost, "/trips/tokyo/orders", "buyer", `{"productName":"X","quantity":0}`, http.StatusUnprocessableEntity},
 		{"approve as buyer", http.MethodPost, "/orders/" + id + "/approve", "buyer", `{"itemPrice":1000,"jastipFee":0}`, http.StatusForbidden},
@@ -112,6 +113,12 @@ func TestOrderErrors(t *testing.T) {
 		{"get as stranger", http.MethodGet, "/orders/" + id, "stranger", "", http.StatusNotFound},
 		{"cancel as stranger", http.MethodPost, "/orders/" + id + "/cancel", "stranger", "", http.StatusNotFound},
 		{"get without token", http.MethodGet, "/orders/" + id, "", "", http.StatusUnauthorized},
+		{"trip inbox unknown trip", http.MethodGet, "/me/trips/" + uuid.NewString() + "/orders", "jastiper", "", http.StatusNotFound},
+		{"trip inbox as buyer", http.MethodGet, "/me/trips/" + uuid.NewString() + "/orders", "buyer", "", http.StatusForbidden},
+		{"trip inbox bad status", http.MethodGet, "/me/trips/" + uuid.NewString() + "/orders?status=lost", "jastiper", "", http.StatusUnprocessableEntity},
+	}
+	if _, body := do(t, app, http.MethodPost, "/trips/tokyo/orders", "buyer", `{"productName":"X","quantity":50}`); body["detail"] != "Trip is full." {
+		t.Errorf("full trip detail = %v, want Trip is full.", body["detail"])
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

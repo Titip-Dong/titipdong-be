@@ -20,15 +20,15 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: transactions   | Done. `database.WithTx` carries the transaction in `context.Context`                                |
 | Platform: observability  | Done. JSON logs with request ID, `/metrics`, local Prometheus/Grafana/Loki/Alloy stack              |
 | Platform: runtime        | Done. Readiness probe, graceful shutdown, job runner, OpenAPI export, audit log, blob uploads       |
-| Platform: remaining      | To do. CI checks                                                                                    |
-| F01 Auth & User          | Partial. Register, login, refresh, logout, `GET /me` done; profile, account status, `create-admin` to do |
-| F02 Trip & Catalog       | Partial. Create, list, get, close, my trips done; capacity, edit, cancel, catalog to do             |
-| F03 Order                | Partial. State machine, request, approve, reject, cancel done; capacity, photo, notifications, per-trip inbox to do |
-| F04 Payment & Escrow     | Partial. Fake gateway checkout, ledger, release, wallet balance done; refunds, payouts, wallet history, auto-release to do |
-| F05 Shipment             | Partial. Ship, get, confirm receipt done; proof photo to do                                         |
-| F06 Dispute              | To do                                                                                              |
-| F07 Notification         | To do                                                                                              |
-| F08 Admin                | To do                                                                                              |
+| Platform: CI             | Done. `check.yml` on every push except `main`: `make check`, integration tests with `-race` against PostgreSQL, OpenAPI export; `deploy-aks.yml` on `main` |
+| F01 Auth & User          | Done                                                                                               |
+| F02 Trip & Catalog       | Done                                                                                               |
+| F03 Order                | Done |
+| F04 Payment & Escrow     | Done |
+| F05 Shipment             | Done                                                                                               |
+| F06 Dispute              | Done                                                                                               |
+| F07 Notification         | Done                                                                                               |
+| F08 Admin                | Done                                                                                               |
 
 ## 2. Scope decisions
 
@@ -88,6 +88,7 @@ Rules:
 2. **Services may call other features' services directly**, one direction only (Go forbids import cycles):
 
    ```
+   trip     → upload
    order    → trip, upload, notification
    trip     → upload
    payment  → order, notification
@@ -161,10 +162,10 @@ added together with its module.
 
 | Job                     | Every   | Action                                                                                         |
 | ----------------------- | ------- | ---------------------------------------------------------------------------------------------- |
-| `orders.expire_unpaid`  | 1 min   | `approved` orders past `payment_deadline` → `cancelled` (system), trip capacity released        |
-| `orders.auto_release`   | 5 min   | `shipped` orders whose shipment is older than 7 days → `delivered` (system) → funds released    |
-| `trips.close_expired`   | 5 min   | `open` trips past `request_deadline` → `closed`; `closed` trips past `returns_on` with no active orders → `completed` |
-| `auth.purge_tokens`     | 1 hour  | Delete `refresh_tokens` rows past `expires_at`                                                  |
+| `orders.expire_unpaid`  | 1 min   | `approved` orders past `payment_deadline` → `cancelled` (system), trip capacity released (done) |
+| `orders.auto_release`   | 5 min   | `shipped` orders whose shipment is older than 7 days → `delivered` (system) → funds released (F05, done) |
+| `trips.close_expired`   | 5 min   | `open` trips past `request_deadline` → `closed`; `closed` trips past `returns_on` with no active orders → `completed` (done) |
+| `auth.purge_tokens`     | 1 hour  | Delete `refresh_tokens` rows past `expires_at` (done)                                           |
 | `uploads.purge_pending` | 1 hour  | Delete blobs and rows of uploads never attached after 24 hours (done)                           |
 
 The order expiry is also applied when an order is read or acted on, so behaviour does not depend on the loop's
@@ -230,6 +231,8 @@ newest one Azurite 3.37 accepts.
 | Runtime env in the Deployment        | Done  | `PAYMENT_GATEWAY=fake`; optional `AZURE_STORAGE_CONNECTION_STRING` (Secret) and `CORS_ORIGINS` (ConfigMap `titipdong-api-config`) |
 | Blob Storage account in Azure        | To do | Create the storage account and add its connection string to the Secret (`deploy/k8s/README.md`) |
 | Frontend origin                      | To do | Set `CORS_ORIGINS` in the ConfigMap once the FE domain exists                            |
+| Same-site domains for FE and API     | To do | The `SameSite=Lax` refresh cookie needs both under one parent domain (`deploy/k8s/README.md` §6) |
+| First admin                          | To do | `create-admin` in a pod after the first rollout (`deploy/k8s/README.md` §5)              |
 
 Migrations run at API startup under an advisory lock, which is safe with several replicas.
 

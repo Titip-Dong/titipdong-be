@@ -9,15 +9,17 @@ import (
 
 	"github.com/Titip-Dong/titipdong-be/db/migrations"
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
 	"github.com/Titip-Dong/titipdong-be/internal/payment"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 )
 
 func TestShipValidation(t *testing.T) {
-	svc := newService(nil, nil, nil, time.Now)
+	svc := newService(nil, nil, nil, nil, nil, time.Now)
 	tests := map[string]ShipParams{
 		"unknown method":       {Method: "drone"},
 		"courier without code": {Method: MethodCourier, TrackingNumber: "JP123"},
@@ -58,14 +60,16 @@ func TestShipAndConfirmReceipt(t *testing.T) {
 	}
 	buyer, jastiper := user(auth.RoleBuyer), user(auth.RoleJastiper)
 
-	trips := trip.NewService(pool)
-	orders := order.NewService(pool, trips)
-	payments := payment.NewService(pool, orders, payment.FakeGateway{})
-	svc := NewService(pool, orders, payments)
+	trips := trip.NewService(pool, nil)
+	notifier := notification.NewService(pool)
+	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
+	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})
+	svc := NewService(pool, orders, payments, upload.NewService(pool, nil), notifier)
 
 	tr, err := trips.Create(ctx, jastiper, trip.CreateParams{
 		Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",
 		DepartsOn: time.Now().AddDate(0, 0, 1), ReturnsOn: time.Now().AddDate(0, 0, 10), RequestDeadline: time.Now().Add(72 * time.Hour),
+		Capacity: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +94,15 @@ func TestShipAndConfirmReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	proof := uuid.New()
+	withProof := courier
+	withProof.ProofUpload = &proof
+	if _, err := svc.Ship(ctx, jastiper, o.ID, withProof); !errors.Is(err, upload.ErrUnavailable) {
+		t.Fatalf("Ship(proof, no blob store) error = %v, want upload.ErrUnavailable", err)
+	}
+	if got, _, _ := orders.Get(ctx, order.Actor{ID: buyer, Type: order.ActorBuyer}, o.ID); got.Status != order.StatusPaid {
+		t.Fatalf("order after a failed proof attach = %s, want paid", got.Status)
+	}
 	if _, err := svc.Ship(ctx, uuid.New(), o.ID, courier); !errors.Is(err, order.ErrNotFound) {
 		t.Errorf("Ship(other jastiper) error = %v, want order.ErrNotFound", err)
 	}
@@ -99,6 +112,13 @@ func TestShipAndConfirmReceipt(t *testing.T) {
 	}
 	if sh.OrderStatus != order.StatusShipped || sh.CourierCode != "jne" {
 		t.Errorf("shipment = %+v", sh)
+	}
+	page, err := notifier.List(ctx, buyer, notification.ListParams{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := page.Items; len(n) != 1 || n[0].Type != notification.TypeOrderShipped || n[0].Data["trackingNumber"] != "JP123" {
+		t.Errorf("buyer's latest notification = %+v, want order.shipped", n)
 	}
 	if _, err := svc.Ship(ctx, jastiper, o.ID, courier); !errors.Is(err, order.ErrInvalidTransition) {
 		t.Errorf("Ship(again) error = %v, want ErrInvalidTransition", err)

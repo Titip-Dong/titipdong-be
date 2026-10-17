@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -20,6 +21,13 @@ const (
 	RoleBuyer    Role = "buyer"
 	RoleJastiper Role = "jastiper"
 	RoleAdmin    Role = "admin"
+)
+
+type Status string
+
+const (
+	StatusActive    Status = "active"
+	StatusSuspended Status = "suspended"
 )
 
 func (r Role) valid() bool {
@@ -39,6 +47,8 @@ var (
 	ErrInvalidToken        = errors.New("invalid access token")
 	ErrInvalidRefreshToken = errors.New("invalid refresh token")
 	ErrUserNotFound        = errors.New("user not found")
+	ErrSuspended           = errors.New("account is suspended")
+	ErrAdminStatus         = errors.New("an admin's status cannot be changed")
 )
 
 // InputError is a business-rule violation the caller can fix. Detail is safe to
@@ -56,6 +66,8 @@ type User struct {
 	Name      string
 	Email     string
 	Role      Role
+	Status    Status
+	Phone     string
 	CreatedAt time.Time
 }
 
@@ -69,6 +81,14 @@ type Session struct {
 	AccessToken  string
 	RefreshToken string
 	User         User
+}
+
+// UpdateParams changes only the fields that are set. NewPassword requires CurrentPassword.
+type UpdateParams struct {
+	Name            *string
+	Phone           *string
+	CurrentPassword string
+	NewPassword     string
 }
 
 type RegisterParams struct {
@@ -85,7 +105,14 @@ type Service interface {
 	Refresh(ctx context.Context, refreshToken string) (Session, error)
 	Logout(ctx context.Context, refreshToken string) error
 	User(ctx context.Context, id uuid.UUID) (User, error)
+	// UpdateProfile returns ErrInvalidCredentials for a wrong current password; a password change revokes every
+	// refresh token.
+	UpdateProfile(ctx context.Context, id uuid.UUID, p UpdateParams) (User, error)
 	Authenticate(ctx context.Context, accessToken string) (Principal, error)
+	// SetStatus suspends or reactivates a buyer or jastiper; suspending revokes every refresh token.
+	SetStatus(ctx context.Context, userID uuid.UUID, status Status) (User, error)
+	// PurgeExpiredTokens deletes refresh tokens past their expiry; it backs the auth.purge_tokens job.
+	PurgeExpiredTokens(ctx context.Context) error
 }
 
 // NewService returns the PostgreSQL-backed Service.
@@ -112,7 +139,7 @@ func (s *service) Register(ctx context.Context, p RegisterParams) (Session, erro
 		if err != nil {
 			return err
 		}
-		sess, _, err = s.session(ctx, u, uuid.New())
+		sess, _, err = s.session(ctx, u, newID())
 		return err
 	})
 	return sess, err
@@ -136,7 +163,7 @@ func (s *service) createUser(ctx context.Context, p RegisterParams) (User, error
 		return User{}, fmt.Errorf("hash password: %w", err)
 	}
 	return s.repo.CreateUser(ctx, newUser{
-		ID:           uuid.New(),
+		ID:           newID(),
 		Name:         name,
 		Email:        normalizeEmail(p.Email),
 		PasswordHash: hash,
@@ -158,13 +185,16 @@ func (s *service) Login(ctx context.Context, email, password string) (Session, e
 	if !verifyPassword(hash, password) {
 		return Session{}, ErrInvalidCredentials
 	}
-	sess, _, err := s.session(ctx, u, uuid.New())
+	if u.Status == StatusSuspended {
+		return Session{}, ErrSuspended
+	}
+	sess, _, err := s.session(ctx, u, newID())
 	return sess, err
 }
 
 func (s *service) Refresh(ctx context.Context, refreshToken string) (Session, error) {
 	var sess Session
-	reused := false
+	reused, suspended := false, false
 	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
 		old, err := s.repo.RefreshTokenByHash(ctx, hashRefreshToken(refreshToken))
 		if err != nil {
@@ -195,6 +225,10 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (Session, er
 		if err != nil {
 			return err
 		}
+		if u.Status == StatusSuspended {
+			suspended = true
+			return s.repo.RevokeRefreshTokenFamily(ctx, old.FamilyID, now)
+		}
 		var newID uuid.UUID
 		sess, newID, err = s.session(ctx, u, old.FamilyID)
 		if err != nil || revoked {
@@ -202,7 +236,7 @@ func (s *service) Refresh(ctx context.Context, refreshToken string) (Session, er
 		}
 		return s.repo.RotateRefreshToken(ctx, old.ID, newID, now)
 	})
-	if err == nil && reused {
+	if err == nil && (reused || suspended) {
 		return Session{}, ErrInvalidRefreshToken
 	}
 	return sess, err
@@ -225,6 +259,80 @@ func (s *service) User(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.repo.UserByID(ctx, id)
 }
 
+func (s *service) UpdateProfile(ctx context.Context, id uuid.UUID, p UpdateParams) (User, error) {
+	var upd userUpdate
+	if p.Name != nil {
+		name := strings.TrimSpace(*p.Name)
+		if name == "" {
+			return User{}, &InputError{Detail: "Name must not be blank."}
+		}
+		upd.Name = &name
+	}
+	if p.Phone != nil {
+		phone := strings.TrimSpace(*p.Phone)
+		upd.Phone = &phone
+	}
+	if p.NewPassword != "" && p.CurrentPassword == "" {
+		return User{}, &InputError{Detail: "Enter your current password to set a new one."}
+	}
+	var u User
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		if p.NewPassword != "" {
+			hash, err := s.repo.PasswordHash(ctx, id)
+			if err != nil {
+				return err
+			}
+			if !verifyPassword(hash, p.CurrentPassword) {
+				return ErrInvalidCredentials
+			}
+			newHash, err := hashPassword(p.NewPassword)
+			if err != nil {
+				return fmt.Errorf("hash password: %w", err)
+			}
+			upd.PasswordHash = &newHash
+			if err := s.repo.RevokeUserRefreshTokens(ctx, id, s.tokens.now()); err != nil {
+				return err
+			}
+		}
+		var err error
+		u, err = s.repo.UpdateUser(ctx, id, upd)
+		return err
+	})
+	return u, err
+}
+
+func (s *service) SetStatus(ctx context.Context, userID uuid.UUID, status Status) (User, error) {
+	if status != StatusActive && status != StatusSuspended {
+		return User{}, &InputError{Detail: "Status must be active or suspended."}
+	}
+	var u User
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		current, err := s.repo.UserByID(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if current.Role == RoleAdmin {
+			return ErrAdminStatus
+		}
+		if u, err = s.repo.SetUserStatus(ctx, userID, status); err != nil {
+			return err
+		}
+		if status == StatusSuspended {
+			return s.repo.RevokeUserRefreshTokens(ctx, userID, s.tokens.now())
+		}
+		return nil
+	})
+	return u, err
+}
+
+func (s *service) PurgeExpiredTokens(ctx context.Context) error {
+	n, err := s.repo.DeleteExpiredRefreshTokens(ctx, s.tokens.now())
+	if err == nil && n > 0 {
+		slog.InfoContext(ctx, "refresh_tokens_purged", "count", n)
+	}
+	return err
+}
+
 func (s *service) Authenticate(_ context.Context, accessToken string) (Principal, error) {
 	return s.tokens.parse(accessToken)
 }
@@ -236,7 +344,7 @@ func (s *service) session(ctx context.Context, u User, familyID uuid.UUID) (Sess
 	}
 	raw, hash := newRefreshToken()
 	t := refreshToken{
-		ID:        uuid.New(),
+		ID:        newID(),
 		UserID:    u.ID,
 		FamilyID:  familyID,
 		ExpiresAt: s.tokens.now().Add(refreshTokenLifetime),
@@ -249,4 +357,8 @@ func (s *service) session(ctx context.Context, u User, familyID uuid.UUID) (Sess
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func newID() uuid.UUID {
+	return uuid.Must(uuid.NewV7())
 }

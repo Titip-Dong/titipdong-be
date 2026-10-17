@@ -1,8 +1,8 @@
 -- name: CreateTrip :exec
 INSERT INTO trips (
     id, jastiper_id, slug, title, description, destination_city, destination_country,
-    departs_on, returns_on, request_deadline
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+    departs_on, returns_on, request_deadline, capacity
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- name: GetTripByID :one
 SELECT sqlc.embed(t), u.name AS jastiper_name
@@ -22,7 +22,10 @@ FROM trips t
 JOIN users u ON u.id = t.jastiper_id
 WHERE t.status = 'open'
   AND t.request_deadline > sqlc.arg(now)::timestamptz
+  AND t.reserved_capacity < t.capacity
   AND t.destination_city ILIKE sqlc.arg(city)::text || '%'
+  AND (sqlc.narg(departs_from)::date IS NULL OR t.departs_on >= sqlc.narg(departs_from)::date)
+  AND (sqlc.narg(departs_to)::date IS NULL OR t.departs_on <= sqlc.narg(departs_to)::date)
   AND (t.departs_on, t.id) > (sqlc.arg(after_departs_on)::date, sqlc.arg(after_id)::uuid)
 ORDER BY t.departs_on, t.id
 LIMIT sqlc.arg(row_limit);
@@ -40,3 +43,46 @@ LIMIT sqlc.arg(row_limit);
 UPDATE trips
 SET status = 'closed', updated_at = now()
 WHERE id = $1 AND status = 'open';
+
+-- name: LockTrip :one
+SELECT sqlc.embed(t), u.name AS jastiper_name
+FROM trips t
+JOIN users u ON u.id = t.jastiper_id
+WHERE t.id = $1
+FOR UPDATE OF t;
+
+-- name: AdjustTripReservedCapacity :exec
+UPDATE trips
+SET reserved_capacity = reserved_capacity + sqlc.arg(units)::integer, updated_at = now()
+WHERE id = sqlc.arg(id);
+
+-- name: CloseExpiredTrips :execrows
+UPDATE trips
+SET status = 'closed', updated_at = now()
+WHERE status = 'open' AND request_deadline <= sqlc.arg(now)::timestamptz;
+
+-- name: CompleteReturnedTrips :execrows
+UPDATE trips t
+SET status = 'completed', updated_at = now()
+WHERE t.status = 'closed'
+  AND t.returns_on < sqlc.arg(today)::date
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.trip_id = t.id
+        AND o.status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed')
+  );
+
+-- name: UpdateTrip :exec
+UPDATE trips
+SET title = $2, description = $3, destination_city = $4, destination_country = $5, departs_on = $6,
+    returns_on = $7, request_deadline = $8, capacity = $9, updated_at = now()
+WHERE id = $1;
+
+-- name: CountActiveTripOrders :one
+SELECT count(*) FROM orders
+WHERE trip_id = $1 AND status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed');
+
+-- name: CancelTrip :exec
+UPDATE trips
+SET status = 'cancelled', updated_at = now()
+WHERE id = $1;

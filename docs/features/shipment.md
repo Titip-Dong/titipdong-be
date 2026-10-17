@@ -4,7 +4,7 @@
 | ------- | ------------------------------------------------------------- |
 | Package | `internal/shipment`                                           |
 | Tag     | `shipment`                                                    |
-| Status  | Partial: ship, get, confirm receipt done; proof photo, notifications to do |
+| Status  | Done                                                          |
 
 ## Overview
 
@@ -12,8 +12,10 @@ After an order is `paid`, the jastiper hands the item over, either in person (**
 with a tracking number, optionally with a proof photo. The order becomes `shipped`. The buyer confirms receipt, which
 moves the order to `delivered` and releases the funds (F04) in the same transaction.
 
-If the buyer neither confirms nor opens a dispute within 7 days of shipping, the `orders.auto_release` job releases
-the funds (see [payment.md](payment.md)).
+If the buyer neither confirms nor opens a dispute within 7 days of shipping, the `orders.auto_release` job in this
+module does what confirming receipt does, as the system: `order.MarkDelivered(system)`, `delivered_at`, and
+`payment.Release` in one transaction per order. It lives here, not in Payment, because it must also set
+`shipments.delivered_at` and Payment cannot depend on Shipment.
 
 Courier status is not fetched from a tracking provider; the buyer checks the tracking number on the courier's site.
 
@@ -25,6 +27,8 @@ Courier status is not fetched from a tracking provider; the buyer checks the tra
 - Only the order's buyer can confirm receipt, and only while `shipped`.
 - The buyer, the jastiper, and admins can read the shipment; others get 404.
 - Shipping notifies the buyer (`order.shipped`); the release notifies the jastiper (`order.released`, from F04).
+- `orders.auto_release` runs every 5 minutes and handles up to 100 due orders per run (oldest shipment first). An
+  order confirmed or disputed in the meantime is skipped; one failing order does not stop the others.
 
 ## Database tables
 
@@ -79,12 +83,12 @@ shipments }o..o| uploads : "proof_key = object_key"
 | `courier_code`    | `TEXT`        | e.g. `jne`, `jnt`, `sicepat`           |
 | `tracking_number` | `TEXT`        | Required for `courier`                 |
 | `handover_note`   | `TEXT`        | ≤ 1000                                 |
-| `proof_key`       | `TEXT`        | Blob key, nullable (to add)            |
+| `proof_key`       | `TEXT`        | Blob key, nullable                     |
 | `shipped_at`      | `TIMESTAMPTZ` | Starts the 7-day auto-release window   |
 | `delivered_at`    | `TIMESTAMPTZ` |                                        |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` |                               |
 
-Index `shipments_auto_release_idx (shipped_at) WHERE delivered_at IS NULL` (to add) for the auto-release job.
+Index `shipments_auto_release_idx (shipped_at) WHERE delivered_at IS NULL` for the auto-release job.
 
 ## Endpoints
 
@@ -94,8 +98,9 @@ Index `shipments_auto_release_idx (shipped_at) WHERE delivered_at IS NULL` (to a
 | `GET`  | `/orders/{id}/shipment`        | `getShipment`      | order buyer/jastiper, admin | Done   | Shipment details                                    |
 | `POST` | `/orders/{id}/confirm-receipt` | `confirmReceipt`   | `buyer` (owner)             | Done   | `MarkDelivered` → `payment.Release`                 |
 
-`shipOrder` gains an optional `proofUploadId`; the shipment response gains a signed `proofUrl` and
-`autoReleaseAt` (`shipped_at + 7 days`).
+The shipment response carries `autoReleaseAt` (`shipped_at + 7 days`) while the order is `shipped`, omitted
+otherwise. `shipOrder` takes an optional `proofUploadId` (purpose `shipment_proof`, owned by the jastiper, attached
+in the ship transaction) and the response carries a signed `proofUrl`, omitted without a proof.
 
 ## Sequence diagrams
 
@@ -158,7 +163,7 @@ alt not owner / status != shipped
   H --> Pembeli : 404 / 409
 else
   S -> DB : UPDATE shipments SET delivered_at = now
-  S -> P : Release(orderID)
+  S -> P : Release(actor, orderID)
   P -> DB : ledger escrow → jastiper 95% + platform 5%
   P -> O : MarkReleased(orderID)
   S -> DB : COMMIT
@@ -176,9 +181,9 @@ Done:
 - [x] `shipments` table and queries.
 - [x] `PUT /orders/{id}/shipment`, `GET /orders/{id}/shipment`, `POST /orders/{id}/confirm-receipt` (one
       transaction with the release).
+- [x] `order.shipped` notification in the ship transaction.
+- [x] `proof_key` column, `proofUploadId` on ship, `proofUrl` in the response.
+- [x] `autoReleaseAt` in the response, the `shipped_at` index, and the `orders.auto_release` job.
 
 Remaining:
 
-- [ ] `proof_key` column, `proofUploadId` on ship, `proofUrl` in the response.
-- [ ] `autoReleaseAt` in the response and the `shipped_at` index for the auto-release job.
-- [ ] `order.shipped` notification.

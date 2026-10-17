@@ -9,18 +9,25 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/auth"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/google/uuid"
 )
 
 const tag = "order"
 
-type Handler struct {
-	svc Service
+// photoSigner turns a stored blob key into a short-lived read URL.
+type photoSigner interface {
+	ReadURL(key string) string
 }
 
-func NewHandler(svc Service) *Handler {
-	return &Handler{svc: svc}
+type Handler struct {
+	svc    Service
+	photos photoSigner
+}
+
+func NewHandler(svc Service, photos photoSigner) *Handler {
+	return &Handler{svc: svc, photos: photos}
 }
 
 func (h *Handler) RegisterRoutes(api huma.API) {
@@ -44,6 +51,16 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Security:    auth.Security(auth.RoleBuyer, auth.RoleJastiper),
 		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
 	}, h.list)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "listTripOrders",
+		Method:      http.MethodGet,
+		Path:        "/me/trips/{id}/orders",
+		Summary:     "List the orders on one of the jastiper's trips, newest first",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity},
+	}, h.listForTrip)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "getOrder",
@@ -87,10 +104,11 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 }
 
 type createOrderRequest struct {
-	ProductName string `json:"productName" minLength:"1" maxLength:"200"`
-	ProductURL  string `json:"productUrl,omitempty" format:"uri" maxLength:"2000"`
-	Quantity    int    `json:"quantity" minimum:"1" maximum:"100"`
-	Notes       string `json:"notes,omitempty" maxLength:"1000"`
+	ProductName string     `json:"productName" minLength:"1" maxLength:"200"`
+	ProductURL  string     `json:"productUrl,omitempty" format:"uri" maxLength:"2000"`
+	Quantity    int        `json:"quantity" minimum:"1" maximum:"100"`
+	Notes       string     `json:"notes,omitempty" maxLength:"1000"`
+	PhotoUpload *uuid.UUID `json:"photoUploadId,omitempty" doc:"Upload with purpose order_photo"`
 }
 
 type approveOrderRequest struct {
@@ -129,6 +147,7 @@ type orderResponse struct {
 	Status          string     `json:"status" enum:"requested,approved,rejected,cancelled,paid,shipped,delivered,disputed,released,refunded"`
 	StatusReason    string     `json:"statusReason"`
 	PaymentDeadline *time.Time `json:"paymentDeadline,omitempty"`
+	PhotoURL        string     `json:"photoUrl,omitempty" doc:"Short-lived signed URL of the product photo"`
 	CreatedAt       time.Time  `json:"createdAt"`
 }
 
@@ -169,11 +188,12 @@ func (h *Handler) create(ctx context.Context, in *struct {
 		ProductURL:  in.Body.ProductURL,
 		Quantity:    in.Body.Quantity,
 		Notes:       in.Body.Notes,
+		PhotoUpload: in.Body.PhotoUpload,
 	})
 	if err != nil {
 		return nil, mapError(err)
 	}
-	return &orderOutput{Body: toOrderResponse(o)}, nil
+	return &orderOutput{Body: h.toOrderResponse(o)}, nil
 }
 
 func (h *Handler) list(ctx context.Context, in *struct {
@@ -197,7 +217,25 @@ func (h *Handler) list(ctx context.Context, in *struct {
 	}
 	items := make([]orderResponse, len(page.Items))
 	for i, o := range page.Items {
-		items[i] = toOrderResponse(o)
+		items[i] = h.toOrderResponse(o)
+	}
+	return &struct{ Body orderPage }{Body: orderPage{Items: items, NextCursor: page.NextCursor}}, nil
+}
+
+func (h *Handler) listForTrip(ctx context.Context, in *struct {
+	ID     uuid.UUID `path:"id"`
+	Status string    `query:"status" enum:"requested,approved,rejected,cancelled,paid,shipped,delivered,disputed,released,refunded"`
+	Limit  int       `query:"limit" default:"20" minimum:"1" maximum:"100"`
+	Cursor string    `query:"cursor"`
+}) (*struct{ Body orderPage }, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	page, err := h.svc.ListForTrip(ctx, p.UserID, in.ID, ListParams{Status: Status(in.Status), Limit: in.Limit, Cursor: in.Cursor})
+	if err != nil {
+		return nil, mapError(err)
+	}
+	items := make([]orderResponse, len(page.Items))
+	for i, o := range page.Items {
+		items[i] = h.toOrderResponse(o)
 	}
 	return &struct{ Body orderPage }{Body: orderPage{Items: items, NextCursor: page.NextCursor}}, nil
 }
@@ -208,7 +246,7 @@ func (h *Handler) get(ctx context.Context, in *idInput) (*struct{ Body orderDeta
 	if err != nil {
 		return nil, mapError(err)
 	}
-	body := orderDetailResponse{Order: toOrderResponse(o), Events: make([]eventResponse, len(events))}
+	body := orderDetailResponse{Order: h.toOrderResponse(o), Events: make([]eventResponse, len(events))}
 	for i, e := range events {
 		body.Events[i] = eventResponse{
 			ToStatus:  string(e.ToStatus),
@@ -230,7 +268,7 @@ func (h *Handler) approve(ctx context.Context, in *struct {
 	Body approveOrderRequest
 }) (*orderOutput, error) {
 	p, _ := auth.PrincipalFrom(ctx)
-	return result(h.svc.Approve(ctx, p.UserID, in.ID, in.Body.ItemPrice, in.Body.JastipFee))
+	return h.result(h.svc.Approve(ctx, p.UserID, in.ID, in.Body.ItemPrice, in.Body.JastipFee))
 }
 
 func (h *Handler) reject(ctx context.Context, in *struct {
@@ -238,7 +276,7 @@ func (h *Handler) reject(ctx context.Context, in *struct {
 	Body reasonRequest
 }) (*orderOutput, error) {
 	p, _ := auth.PrincipalFrom(ctx)
-	return result(h.svc.Reject(ctx, p.UserID, in.ID, in.Body.Reason))
+	return h.result(h.svc.Reject(ctx, p.UserID, in.ID, in.Body.Reason))
 }
 
 func (h *Handler) cancel(ctx context.Context, in *struct {
@@ -250,14 +288,14 @@ func (h *Handler) cancel(ctx context.Context, in *struct {
 	if in.Body != nil {
 		reason = in.Body.Reason
 	}
-	return result(h.svc.Cancel(ctx, p.UserID, in.ID, reason))
+	return h.result(h.svc.Cancel(ctx, p.UserID, in.ID, reason))
 }
 
-func result(o Order, err error) (*orderOutput, error) {
+func (h *Handler) result(o Order, err error) (*orderOutput, error) {
 	if err != nil {
 		return nil, mapError(err)
 	}
-	return &orderOutput{Body: toOrderResponse(o)}, nil
+	return &orderOutput{Body: h.toOrderResponse(o)}, nil
 }
 
 func mapError(err error) error {
@@ -273,13 +311,15 @@ func mapError(err error) error {
 		return huma.Error404NotFound("Trip not found.")
 	case errors.Is(err, ErrTripClosed):
 		return huma.Error409Conflict("Trip no longer accepts requests.")
+	case errors.Is(err, trip.ErrCapacityFull):
+		return huma.Error409Conflict("Trip is full.")
 	case errors.Is(err, ErrInvalidTransition):
 		return huma.Error409Conflict("Order status does not allow this action.")
 	}
-	return err
+	return upload.MapError(err)
 }
 
-func toOrderResponse(o Order) orderResponse {
+func (h *Handler) toOrderResponse(o Order) orderResponse {
 	return orderResponse{
 		ID:              o.ID,
 		Code:            o.Code,
@@ -296,6 +336,7 @@ func toOrderResponse(o Order) orderResponse {
 		Status:          string(o.Status),
 		StatusReason:    o.StatusReason,
 		PaymentDeadline: o.PaymentDeadline,
+		PhotoURL:        h.photos.ReadURL(o.PhotoKey),
 		CreatedAt:       o.CreatedAt,
 	}
 }

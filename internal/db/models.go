@@ -22,6 +22,38 @@ type AuditLog struct {
 	CreatedAt  time.Time
 }
 
+type Dispute struct {
+	ID           uuid.UUID
+	OrderID      uuid.UUID
+	OpenedBy     uuid.UUID
+	Category     string
+	Description  string
+	Status       string
+	Decision     *string
+	DecisionNote *string
+	DecidedBy    *uuid.UUID
+	DecidedAt    *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type DisputeEvidence struct {
+	ID         uuid.UUID
+	DisputeID  uuid.UUID
+	UploadedBy uuid.UUID
+	FileKey    string
+	Note       *string
+	CreatedAt  time.Time
+}
+
+type DisputeMessage struct {
+	ID        int64
+	DisputeID uuid.UUID
+	AuthorID  uuid.UUID
+	Body      string
+	CreatedAt time.Time
+}
+
 type LedgerAccount struct {
 	ID        uuid.UUID
 	Kind      string
@@ -48,6 +80,15 @@ type LedgerTransaction struct {
 	CreatedAt      time.Time
 }
 
+type Notification struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	Type      string
+	Data      []byte
+	ReadAt    *time.Time
+	CreatedAt time.Time
+}
+
 type Order struct {
 	ID              uuid.UUID
 	Code            string
@@ -66,6 +107,7 @@ type Order struct {
 	PaymentDeadline *time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	PhotoKey        *string
 }
 
 type OrderEvent struct {
@@ -94,6 +136,30 @@ type Payment struct {
 	UpdatedAt             time.Time
 }
 
+type Payout struct {
+	ID              uuid.UUID
+	JastiperID      uuid.UUID
+	Amount          int64
+	BankName        string
+	AccountNumber   string
+	AccountName     string
+	Status          string
+	Reference       *string
+	RejectionReason *string
+	DecidedBy       *uuid.UUID
+	RequestedAt     time.Time
+	DecidedAt       *time.Time
+}
+
+type PayoutAccount struct {
+	UserID        uuid.UUID
+	BankName      string
+	AccountNumber string
+	AccountName   string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
 type RefreshToken struct {
 	ID         uuid.UUID
 	UserID     uuid.UUID
@@ -106,6 +172,19 @@ type RefreshToken struct {
 	CreatedAt  time.Time
 }
 
+type Refund struct {
+	ID               uuid.UUID
+	OrderID          uuid.UUID
+	PaymentID        uuid.UUID
+	Amount           int64
+	Reason           string
+	Status           string
+	ProviderRefundID *string
+	FailureReason    *string
+	CreatedAt        time.Time
+	CompletedAt      *time.Time
+}
+
 type Shipment struct {
 	OrderID        uuid.UUID
 	Method         string
@@ -116,6 +195,7 @@ type Shipment struct {
 	DeliveredAt    *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	ProofKey       *string
 }
 
 type Trip struct {
@@ -132,6 +212,20 @@ type Trip struct {
 	Status             string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	Capacity           int32
+	ReservedCapacity   int32
+}
+
+type TripItem struct {
+	ID             uuid.UUID
+	TripID         uuid.UUID
+	Name           string
+	Description    *string
+	PhotoKey       *string
+	ReferencePrice *int64
+	Position       int32
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type Upload struct {
@@ -153,4 +247,7 @@ type User struct {
 	PasswordHash string
 	Role         string
 	CreatedAt    time.Time
+	Status       string
+	Phone        *string
+	UpdatedAt    time.Time
 }

@@ -6,12 +6,15 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -47,7 +50,11 @@ type Actor struct {
 
 var System = Actor{Type: ActorSystem}
 
-const paymentWindow = 24 * time.Hour
+const (
+	paymentWindow  = 24 * time.Hour
+	expiryBatch    = 100
+	deadlineReason = "Payment deadline passed."
+)
 
 var (
 	ErrNotFound          = errors.New("order not found")
@@ -84,6 +91,7 @@ type Order struct {
 	Status          Status
 	StatusReason    string
 	PaymentDeadline *time.Time
+	PhotoKey        string
 	CreatedAt       time.Time
 }
 
@@ -101,6 +109,8 @@ type CreateParams struct {
 	ProductURL  string
 	Quantity    int
 	Notes       string
+	// PhotoUpload is an optional upload with purpose order_photo owned by the buyer.
+	PhotoUpload *uuid.UUID
 }
 
 type ListParams struct {
@@ -130,6 +140,7 @@ var transitions = []transition{
 	{StatusPaid, StatusShipped, ActorJastiper},
 	{StatusPaid, StatusRefunded, ActorJastiper},
 	{StatusShipped, StatusDelivered, ActorBuyer},
+	{StatusShipped, StatusDelivered, ActorSystem},
 	{StatusShipped, StatusDisputed, ActorBuyer},
 	{StatusDisputed, StatusDelivered, ActorAdmin},
 	{StatusDisputed, StatusRefunded, ActorAdmin},
@@ -143,6 +154,8 @@ func allowed(from, to Status, actor ActorType) bool {
 type Service interface {
 	Create(ctx context.Context, buyerID uuid.UUID, tripSlug string, p CreateParams) (Order, error)
 	List(ctx context.Context, userID uuid.UUID, p ListParams) (Page, error)
+	// ListForTrip is the jastiper's inbox for one trip; another jastiper's trip returns trip.ErrNotFound.
+	ListForTrip(ctx context.Context, jastiperID, tripID uuid.UUID, p ListParams) (Page, error)
 	// Get returns ErrNotFound unless the actor is the order's buyer or jastiper, or an admin.
 	Get(ctx context.Context, actor Actor, id uuid.UUID) (Order, []Event, error)
 	Approve(ctx context.Context, jastiperID, id uuid.UUID, itemPrice, jastipFee int64) (Order, error)
@@ -157,29 +170,36 @@ type Service interface {
 	MarkDisputed(ctx context.Context, buyerID, id uuid.UUID, reason string) (Order, error)
 	MarkReleased(ctx context.Context, id uuid.UUID) (Order, error)
 	MarkRefunded(ctx context.Context, actor Actor, id uuid.UUID, reason string) (Order, error)
+	// ExpireUnpaid cancels approved orders past their payment deadline, one transaction each; it backs the
+	// orders.expire_unpaid job and the read paths.
+	ExpireUnpaid(ctx context.Context) error
 }
 
-func NewService(pool *pgxpool.Pool, trips trip.Service) Service {
-	return newService(newRepository(pool), trips, time.Now)
+// uploadAttacher is the part of upload.Service that orders need.
+type uploadAttacher interface {
+	Attach(ctx context.Context, ownerID, id uuid.UUID, purpose upload.Purpose) (string, error)
+}
+
+func NewService(pool *pgxpool.Pool, trips trip.Service, uploads uploadAttacher, notifier notification.Service) Service {
+	return newService(newRepository(pool), trips, uploads, notifier, time.Now)
 }
 
 type service struct {
-	repo  repository
-	trips trip.Service
-	now   func() time.Time
+	repo     repository
+	trips    trip.Service
+	uploads  uploadAttacher
+	notifier notification.Service
+	now      func() time.Time
 }
 
-func newService(repo repository, trips trip.Service, now func() time.Time) *service {
-	return &service{repo: repo, trips: trips, now: now}
+func newService(repo repository, trips trip.Service, uploads uploadAttacher, notifier notification.Service, now func() time.Time) *service {
+	return &service{repo: repo, trips: trips, uploads: uploads, notifier: notifier, now: now}
 }
 
 func (s *service) Create(ctx context.Context, buyerID uuid.UUID, tripSlug string, p CreateParams) (Order, error) {
 	t, err := s.trips.BySlug(ctx, tripSlug)
 	if err != nil {
 		return Order{}, err
-	}
-	if !t.AcceptsRequests(s.now()) {
-		return Order{}, ErrTripClosed
 	}
 	if t.JastiperID == buyerID {
 		return Order{}, &InputError{Detail: "You cannot order from your own trip."}
@@ -202,10 +222,37 @@ func (s *service) Create(ctx context.Context, buyerID uuid.UUID, tripSlug string
 	for range 3 {
 		o.Code = newCode()
 		err = s.repo.WithTx(ctx, func(ctx context.Context) error {
+			if err := s.trips.Reserve(ctx, t.ID, o.Quantity); err != nil {
+				if errors.Is(err, trip.ErrTripClosed) {
+					return ErrTripClosed
+				}
+				return err
+			}
+			if p.PhotoUpload != nil {
+				key, err := s.uploads.Attach(ctx, buyerID, *p.PhotoUpload, upload.PurposeOrderPhoto)
+				if err != nil {
+					return err
+				}
+				o.PhotoKey = key
+			}
 			if err := s.repo.CreateOrder(ctx, o); err != nil {
 				return err
 			}
-			return s.repo.InsertEvent(ctx, o.ID, Event{ToStatus: StatusRequested, ActorID: &buyerID, ActorType: ActorBuyer})
+			if err := s.repo.InsertEvent(ctx, o.ID, Event{ToStatus: StatusRequested, ActorID: &buyerID, ActorType: ActorBuyer}); err != nil {
+				return err
+			}
+			created, err := s.repo.Order(ctx, o.ID)
+			if err != nil {
+				return err
+			}
+			return s.notifier.Notify(ctx, notification.Event{
+				Type:       notification.TypeOrderRequested,
+				Recipients: []uuid.UUID{created.JastiperID},
+				Data: map[string]any{
+					"orderId": created.ID, "orderCode": created.Code,
+					"productName": created.ProductName, "buyerName": created.BuyerName,
+				},
+			})
 		})
 		if !errors.Is(err, errCodeTaken) {
 			break
@@ -222,7 +269,7 @@ func (s *service) List(ctx context.Context, userID uuid.UUID, p ListParams) (Pag
 	if err != nil {
 		return Page{}, err
 	}
-	if err := s.repo.ExpireUnpaid(ctx, s.now()); err != nil {
+	if err := s.ExpireUnpaid(ctx); err != nil {
 		return Page{}, err
 	}
 	orders, err := s.repo.List(ctx, userID, p.Status, p.TripID, before, p.Limit+1)
@@ -235,8 +282,20 @@ func (s *service) List(ctx context.Context, userID uuid.UUID, p ListParams) (Pag
 	return Page{Items: items, NextCursor: next}, nil
 }
 
+func (s *service) ListForTrip(ctx context.Context, jastiperID, tripID uuid.UUID, p ListParams) (Page, error) {
+	t, err := s.trips.ByID(ctx, tripID)
+	if err != nil {
+		return Page{}, err
+	}
+	if t.JastiperID != jastiperID {
+		return Page{}, trip.ErrNotFound
+	}
+	p.TripID = &tripID
+	return s.List(ctx, jastiperID, p)
+}
+
 func (s *service) Get(ctx context.Context, actor Actor, id uuid.UUID) (Order, []Event, error) {
-	if err := s.repo.ExpireUnpaid(ctx, s.now()); err != nil {
+	if err := s.expireOne(ctx, id); err != nil {
 		return Order{}, nil, err
 	}
 	o, err := s.repo.Order(ctx, id)
@@ -262,6 +321,14 @@ func (s *service) Approve(ctx context.Context, jastiperID, id uuid.UUID, itemPri
 		total := itemPrice*int64(o.Quantity) + jastipFee
 		deadline := s.now().Add(paymentWindow)
 		o.ItemPrice, o.JastipFee, o.Total, o.PaymentDeadline = &itemPrice, &jastipFee, &total, &deadline
+	}, func(o Order) notification.Event {
+		return notification.Event{
+			Type:       notification.TypeOrderApproved,
+			Recipients: []uuid.UUID{o.BuyerID},
+			Data: map[string]any{
+				"orderId": o.ID, "orderCode": o.Code, "total": *o.Total, "paymentDeadline": *o.PaymentDeadline,
+			},
+		}
 	})
 }
 
@@ -270,11 +337,20 @@ func (s *service) Reject(ctx context.Context, jastiperID, id uuid.UUID, reason s
 	if reason == "" {
 		return Order{}, &InputError{Detail: "Reason must not be blank."}
 	}
-	return s.transition(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, id, StatusRejected, reason, nil)
+	return s.transition(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, id, StatusRejected, reason, nil,
+		func(o Order) notification.Event {
+			return notification.Event{
+				Type:       notification.TypeOrderRejected,
+				Recipients: []uuid.UUID{o.BuyerID},
+				Data:       map[string]any{"orderId": o.ID, "orderCode": o.Code, "reason": reason},
+			}
+		})
 }
 
 func (s *service) Cancel(ctx context.Context, buyerID, id uuid.UUID, reason string) (Order, error) {
-	return s.transition(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id, StatusCancelled, strings.TrimSpace(reason), nil)
+	reason = strings.TrimSpace(reason)
+	return s.transition(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id, StatusCancelled, reason, nil,
+		func(o Order) notification.Event { return cancelledEvent(o, []uuid.UUID{o.JastiperID}) })
 }
 
 func (s *service) Lock(ctx context.Context, id uuid.UUID) (Order, error) {
@@ -282,32 +358,32 @@ func (s *service) Lock(ctx context.Context, id uuid.UUID) (Order, error) {
 }
 
 func (s *service) MarkPaid(ctx context.Context, id uuid.UUID) (Order, error) {
-	return s.transition(ctx, System, id, StatusPaid, "", nil)
+	return s.transition(ctx, System, id, StatusPaid, "", nil, nil)
 }
 
 func (s *service) MarkShipped(ctx context.Context, jastiperID, id uuid.UUID) (Order, error) {
-	return s.transition(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, id, StatusShipped, "", nil)
+	return s.transition(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, id, StatusShipped, "", nil, nil)
 }
 
 func (s *service) MarkDelivered(ctx context.Context, actor Actor, id uuid.UUID) (Order, error) {
-	return s.transition(ctx, actor, id, StatusDelivered, "", nil)
+	return s.transition(ctx, actor, id, StatusDelivered, "", nil, nil)
 }
 
 func (s *service) MarkDisputed(ctx context.Context, buyerID, id uuid.UUID, reason string) (Order, error) {
-	return s.transition(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id, StatusDisputed, reason, nil)
+	return s.transition(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id, StatusDisputed, reason, nil, nil)
 }
 
 func (s *service) MarkReleased(ctx context.Context, id uuid.UUID) (Order, error) {
-	return s.transition(ctx, System, id, StatusReleased, "", nil)
+	return s.transition(ctx, System, id, StatusReleased, "", nil, nil)
 }
 
 func (s *service) MarkRefunded(ctx context.Context, actor Actor, id uuid.UUID, reason string) (Order, error) {
-	return s.transition(ctx, actor, id, StatusRefunded, reason, nil)
+	return s.transition(ctx, actor, id, StatusRefunded, reason, nil, nil)
 }
 
 // transition locks the order, checks ownership and the transition table, then
 // writes the new status and an event in one transaction.
-func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to Status, reason string, apply func(*Order)) (Order, error) {
+func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to Status, reason string, apply func(*Order), event func(Order) notification.Event) (Order, error) {
 	var out Order
 	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
 		o, err := s.repo.Lock(ctx, id)
@@ -328,6 +404,11 @@ func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to 
 		if err := s.repo.UpdateStatus(ctx, o); err != nil {
 			return err
 		}
+		if releasesCapacity(to) {
+			if err := s.trips.Release(ctx, o.TripID, o.Quantity); err != nil {
+				return err
+			}
+		}
 		e := Event{FromStatus: &from, ToStatus: to, ActorType: actor.Type, Reason: reason}
 		if actor.Type != ActorSystem {
 			e.ActorID = &actor.ID
@@ -336,9 +417,59 @@ func (s *service) transition(ctx context.Context, actor Actor, id uuid.UUID, to 
 			return err
 		}
 		out = o
-		return nil
+		if event == nil {
+			return nil
+		}
+		return s.notifier.Notify(ctx, event(o))
 	})
 	return out, err
+}
+
+func (s *service) ExpireUnpaid(ctx context.Context) error {
+	due, err := s.repo.DueUnpaid(ctx, s.now(), expiryBatch)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, id := range due {
+		if err := s.expireOne(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("expire order %s: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// expireOne cancels the order if it is still approved past its deadline; anything else is a no-op.
+func (s *service) expireOne(ctx context.Context, id uuid.UUID) error {
+	return s.repo.WithTx(ctx, func(ctx context.Context) error {
+		o, err := s.repo.Lock(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if o.Status != StatusApproved || o.PaymentDeadline == nil || s.now().Before(*o.PaymentDeadline) {
+			return nil
+		}
+		_, err = s.transition(ctx, System, id, StatusCancelled, deadlineReason, nil, func(o Order) notification.Event {
+			return cancelledEvent(o, []uuid.UUID{o.BuyerID, o.JastiperID})
+		})
+		return err
+	})
+}
+
+// releasesCapacity reports whether an order leaves the trip without being carried.
+func releasesCapacity(to Status) bool {
+	return to == StatusRejected || to == StatusCancelled || to == StatusRefunded
+}
+
+func cancelledEvent(o Order, recipients []uuid.UUID) notification.Event {
+	return notification.Event{
+		Type:       notification.TypeOrderCancelled,
+		Recipients: recipients,
+		Data:       map[string]any{"orderId": o.ID, "orderCode": o.Code, "reason": o.StatusReason},
+	}
 }
 
 func canSee(o Order, actor Actor) bool {

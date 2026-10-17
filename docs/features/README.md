@@ -6,14 +6,14 @@ source of truth, and its file is kept in sync with them.
 
 | ID  | Module                              | Package                 | Status                                                                 |
 | --- | ----------------------------------- | ----------------------- | ---------------------------------------------------------------------- |
-| F01 | [Auth & User](auth.md)              | `internal/auth`         | Partial: session done; profile, account status, `create-admin` to do   |
-| F02 | [Trip & Catalog](trip.md)           | `internal/trip`         | Partial: core done; capacity, edit, cancel, catalog to do              |
-| F03 | [Order](order.md)                   | `internal/order`        | Partial: state machine done; capacity, photo, notifications to do      |
-| F04 | [Payment & Escrow](payment.md)      | `internal/payment`      | Partial: checkout, ledger, release done; refunds, payouts to do        |
-| F05 | [Shipment](shipment.md)             | `internal/shipment`     | Partial: ship and confirm done; proof photo to do                      |
-| F06 | [Dispute](dispute.md)               | `internal/dispute`      | To do                                                                  |
-| F07 | [Notification](notification.md)     | `internal/notification` | To do                                                                  |
-| F08 | [Admin](admin.md)                   | `internal/admin`        | To do                                                                  |
+| F01 | [Auth & User](auth.md)              | `internal/auth`         | Done                                                                   |
+| F02 | [Trip & Catalog](trip.md)           | `internal/trip`         | Done                                                                   |
+| F03 | [Order](order.md)                   | `internal/order`        | Done |
+| F04 | [Payment & Escrow](payment.md)      | `internal/payment`      | Done |
+| F05 | [Shipment](shipment.md)             | `internal/shipment`     | Done                                                                   |
+| F06 | [Dispute](dispute.md)               | `internal/dispute`      | Done                                                                   |
+| F07 | [Notification](notification.md)     | `internal/notification` | Done                                                                   |
+| F08 | [Admin](admin.md)                   | `internal/admin`        | Done                                                                   |
 
 Scope decisions (fake payment gateway, in-process jobs, Azure Blob uploads, in-app notifications only) and what is
 deliberately left out are in [PLAN.md](../PLAN.md#2-scope-decisions).
@@ -243,7 +243,7 @@ alt already paid
     pay --> fe      : 200 (no-op)
 else pending
     pay -> db       : UPDATE payments SET status = paid
-    pay -> db       : Ledger payment_received:<payment_id>\n(debit gateway_clearing, credit escrow)
+    pay -> db       : Ledger payment:<payment_id>\n(debit gateway_clearing, credit escrow)
     pay -> order    : MarkPaid(orderID)
     order -> db     : status = paid, order_events
     pay -> notif    : Notify(buyer + jastiper, payment.received)
@@ -298,7 +298,7 @@ fe -> ship      : POST /orders/{id}/confirm-receipt
 ship -> db      : BEGIN
 ship -> order   : MarkDelivered(orderID, buyer)
 ship -> db      : UPDATE shipments SET delivered_at
-ship -> pay     : Release(orderID)
+ship -> pay     : Release(actor, orderID)
 pay -> pay      : fee = floor(total × 5 / 100)
 pay -> db       : Ledger release:<order_id>: debit escrow,\ncredit jastiper_payable (95%) + platform_revenue (5%)
 pay -> order    : MarkReleased(orderID)
@@ -366,7 +366,7 @@ alt refund
     pay -> order    : MarkRefunded(orderID)
 else release
     dsp -> order    : MarkDelivered(orderID, admin)
-    dsp -> pay      : Release(orderID)
+    dsp -> pay      : Release(actor, orderID)
 end
 
 dsp -> db       : INSERT audit_logs (dispute.decided)

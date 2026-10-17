@@ -13,8 +13,8 @@ import (
 )
 
 const createOrder = `-- name: CreateOrder :exec
-INSERT INTO orders (id, code, trip_id, buyer_id, jastiper_id, product_name, product_url, quantity, notes)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO orders (id, code, trip_id, buyer_id, jastiper_id, product_name, product_url, quantity, notes, photo_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 `
 
 type CreateOrderParams struct {
@@ -27,6 +27,7 @@ type CreateOrderParams struct {
 	ProductUrl  string
 	Quantity    int32
 	Notes       string
+	PhotoKey    *string
 }
 
 func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) error {
@@ -40,29 +41,13 @@ func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) error 
 		arg.ProductUrl,
 		arg.Quantity,
 		arg.Notes,
+		arg.PhotoKey,
 	)
 	return err
 }
 
-const expireUnpaidOrders = `-- name: ExpireUnpaidOrders :exec
-WITH expired AS (
-    UPDATE orders
-    SET status = 'cancelled', status_reason = 'Payment deadline passed.', updated_at = now()
-    WHERE status = 'approved' AND payment_deadline <= $1::timestamptz
-    RETURNING id
-)
-INSERT INTO order_events (order_id, from_status, to_status, actor_type, reason)
-SELECT id, 'approved', 'cancelled', 'system', 'Payment deadline passed.'
-FROM expired
-`
-
-func (q *Queries) ExpireUnpaidOrders(ctx context.Context, now time.Time) error {
-	_, err := q.db.Exec(ctx, expireUnpaidOrders, now)
-	return err
-}
-
 const getOrder = `-- name: GetOrder :one
-SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
+SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, o.photo_key, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
 FROM orders o
 JOIN trips t ON t.id = o.trip_id
 JOIN users b ON b.id = o.buyer_id
@@ -99,6 +84,7 @@ func (q *Queries) GetOrder(ctx context.Context, id uuid.UUID) (GetOrderRow, erro
 		&i.Order.PaymentDeadline,
 		&i.Order.CreatedAt,
 		&i.Order.UpdatedAt,
+		&i.Order.PhotoKey,
 		&i.TripSlug,
 		&i.TripTitle,
 		&i.BuyerName,
@@ -177,7 +163,7 @@ func (q *Queries) ListOrderEvents(ctx context.Context, orderID uuid.UUID) ([]Lis
 }
 
 const listOrders = `-- name: ListOrders :many
-SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
+SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, o.photo_key, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
 FROM orders o
 JOIN trips t ON t.id = o.trip_id
 JOIN users b ON b.id = o.buyer_id
@@ -241,6 +227,7 @@ func (q *Queries) ListOrders(ctx context.Context, arg ListOrdersParams) ([]ListO
 			&i.Order.PaymentDeadline,
 			&i.Order.CreatedAt,
 			&i.Order.UpdatedAt,
+			&i.Order.PhotoKey,
 			&i.TripSlug,
 			&i.TripTitle,
 			&i.BuyerName,
@@ -256,8 +243,40 @@ func (q *Queries) ListOrders(ctx context.Context, arg ListOrdersParams) ([]ListO
 	return items, nil
 }
 
+const listUnpaidPastDeadline = `-- name: ListUnpaidPastDeadline :many
+SELECT id FROM orders
+WHERE status = 'approved' AND payment_deadline <= $1::timestamptz
+ORDER BY payment_deadline, id
+LIMIT $2
+`
+
+type ListUnpaidPastDeadlineParams struct {
+	Now      time.Time
+	RowLimit int32
+}
+
+func (q *Queries) ListUnpaidPastDeadline(ctx context.Context, arg ListUnpaidPastDeadlineParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listUnpaidPastDeadline, arg.Now, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockOrder = `-- name: LockOrder :one
-SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
+SELECT o.id, o.code, o.trip_id, o.buyer_id, o.jastiper_id, o.product_name, o.product_url, o.quantity, o.notes, o.item_price, o.jastip_fee, o.total, o.status, o.status_reason, o.payment_deadline, o.created_at, o.updated_at, o.photo_key, t.slug AS trip_slug, t.title AS trip_title, b.name AS buyer_name, j.name AS jastiper_name
 FROM orders o
 JOIN trips t ON t.id = o.trip_id
 JOIN users b ON b.id = o.buyer_id
@@ -295,6 +314,7 @@ func (q *Queries) LockOrder(ctx context.Context, id uuid.UUID) (LockOrderRow, er
 		&i.Order.PaymentDeadline,
 		&i.Order.CreatedAt,
 		&i.Order.UpdatedAt,
+		&i.Order.PhotoKey,
 		&i.TripSlug,
 		&i.TripTitle,
 		&i.BuyerName,

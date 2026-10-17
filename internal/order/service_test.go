@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/pagination"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
+	"github.com/Titip-Dong/titipdong-be/internal/upload"
 	"github.com/google/uuid"
 )
 
@@ -90,18 +92,62 @@ func (r *fakeRepository) Events(_ context.Context, orderID uuid.UUID) ([]Event, 
 	return r.events[orderID], nil
 }
 
-func (r *fakeRepository) ExpireUnpaid(_ context.Context, now time.Time) error {
+func (r *fakeRepository) DueUnpaid(_ context.Context, now time.Time, limit int) ([]uuid.UUID, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	var due []uuid.UUID
 	for id, o := range r.orders {
-		if o.Status == StatusApproved && !o.PaymentDeadline.After(now) {
-			from := StatusApproved
-			o.Status, o.StatusReason = StatusCancelled, "Payment deadline passed."
-			r.orders[id] = o
-			r.events[id] = append(r.events[id], Event{FromStatus: &from, ToStatus: StatusCancelled, ActorType: ActorSystem})
+		if o.Status == StatusApproved && !o.PaymentDeadline.After(now) && len(due) < limit {
+			due = append(due, id)
 		}
 	}
+	return due, nil
+}
+
+type fakeNotifier struct {
+	notification.Service
+	mu     sync.Mutex
+	events []notification.Event
+}
+
+func (f *fakeNotifier) Notify(_ context.Context, e notification.Event) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, e)
 	return nil
+}
+
+func (f *fakeNotifier) last(t *testing.T, typ string) notification.Event {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.events) == 0 || f.events[len(f.events)-1].Type != typ {
+		t.Fatalf("notifications = %+v, want last of type %s", f.events, typ)
+	}
+	return f.events[len(f.events)-1]
+}
+
+func notifierOf(svc *service) *fakeNotifier {
+	return svc.notifier.(*fakeNotifier)
+}
+
+// fakeUploads attaches any upload except unknownUploadID and signs keys with a fixed prefix.
+type fakeUploads struct{}
+
+var unknownUploadID = uuid.New()
+
+func (fakeUploads) Attach(_ context.Context, _, id uuid.UUID, purpose upload.Purpose) (string, error) {
+	if id == unknownUploadID {
+		return "", upload.ErrNotFound
+	}
+	return string(purpose) + "/" + id.String() + ".jpg", nil
+}
+
+func (fakeUploads) ReadURL(key string) string {
+	if key == "" {
+		return ""
+	}
+	return "https://blob.test/" + key
 }
 
 type fakeTrips struct {
@@ -117,6 +163,49 @@ func (f fakeTrips) BySlug(_ context.Context, slug string) (trip.Trip, error) {
 	return t, nil
 }
 
+func (f fakeTrips) ByID(_ context.Context, id uuid.UUID) (trip.Trip, error) {
+	slug := f.byID(id)
+	if slug == "" {
+		return trip.Trip{}, trip.ErrNotFound
+	}
+	return f.trips[slug], nil
+}
+
+func (f fakeTrips) byID(id uuid.UUID) string {
+	for slug, t := range f.trips {
+		if t.ID == id {
+			return slug
+		}
+	}
+	return ""
+}
+
+func (f fakeTrips) Reserve(_ context.Context, tripID uuid.UUID, units int) error {
+	slug := f.byID(tripID)
+	t := f.trips[slug]
+	switch {
+	case t.Status != trip.StatusOpen:
+		return trip.ErrTripClosed
+	case t.RemainingCapacity() < units:
+		return trip.ErrCapacityFull
+	}
+	t.ReservedCapacity += units
+	f.trips[slug] = t
+	return nil
+}
+
+func (f fakeTrips) Release(_ context.Context, tripID uuid.UUID, units int) error {
+	slug := f.byID(tripID)
+	t := f.trips[slug]
+	t.ReservedCapacity = max(0, t.ReservedCapacity-units)
+	f.trips[slug] = t
+	return nil
+}
+
+func reserved(svc *service, slug string) int {
+	return svc.trips.(fakeTrips).trips[slug].ReservedCapacity
+}
+
 type clock struct{ t time.Time }
 
 func (c *clock) now() time.Time { return c.t }
@@ -129,10 +218,10 @@ var (
 func newTestService(c *clock) *service {
 	deadline := c.t.Add(7 * 24 * time.Hour)
 	trips := fakeTrips{trips: map[string]trip.Trip{
-		"tokyo":  {ID: uuid.New(), JastiperID: jastiperID, Slug: "tokyo", Status: trip.StatusOpen, RequestDeadline: deadline},
-		"closed": {ID: uuid.New(), JastiperID: jastiperID, Slug: "closed", Status: trip.StatusClosed, RequestDeadline: deadline},
+		"tokyo":  {ID: uuid.New(), JastiperID: jastiperID, Slug: "tokyo", Status: trip.StatusOpen, RequestDeadline: deadline, Capacity: 10},
+		"closed": {ID: uuid.New(), JastiperID: jastiperID, Slug: "closed", Status: trip.StatusClosed, RequestDeadline: deadline, Capacity: 10},
 	}}
-	return newService(newFakeRepository(c.now), trips, c.now)
+	return newService(newFakeRepository(c.now), trips, fakeUploads{}, &fakeNotifier{}, c.now)
 }
 
 func newClock() *clock {
@@ -300,5 +389,217 @@ func TestListFiltersByStatus(t *testing.T) {
 	}
 	if len(page.Items) != 1 || page.Items[0].StatusReason != "Stok habis" {
 		t.Errorf("items = %+v, want the rejected order", page.Items)
+	}
+}
+
+func TestTransitionsNotifyTheOtherParty(t *testing.T) {
+	c := newClock()
+	svc := newTestService(c)
+	ctx := t.Context()
+	n := notifierOf(svc)
+
+	o := createOrder(t, svc)
+	e := n.last(t, notification.TypeOrderRequested)
+	if !slices.Equal(e.Recipients, []uuid.UUID{jastiperID}) || e.Data["orderCode"] != o.Code || e.Data["productName"] != "Tokyo Banana" {
+		t.Errorf("order.requested = %+v", e)
+	}
+
+	_, _ = svc.Approve(ctx, jastiperID, o.ID, 25_000, 15_000)
+	e = n.last(t, notification.TypeOrderApproved)
+	if !slices.Equal(e.Recipients, []uuid.UUID{buyerID}) || e.Data["total"] != int64(90_000) {
+		t.Errorf("order.approved = %+v", e)
+	}
+
+	rejected := createOrder(t, svc)
+	_, _ = svc.Reject(ctx, jastiperID, rejected.ID, "Stok habis")
+	if e = n.last(t, notification.TypeOrderRejected); e.Data["reason"] != "Stok habis" {
+		t.Errorf("order.rejected = %+v", e)
+	}
+
+	cancelled := createOrder(t, svc)
+	_, _ = svc.Cancel(ctx, buyerID, cancelled.ID, "Salah pesan")
+	if e = n.last(t, notification.TypeOrderCancelled); !slices.Equal(e.Recipients, []uuid.UUID{jastiperID}) {
+		t.Errorf("order.cancelled by buyer = %+v", e)
+	}
+
+	count := len(n.events)
+	_, _ = svc.MarkPaid(ctx, rejected.ID)
+	if len(n.events) != count {
+		t.Errorf("a refused transition notified: %+v", n.events[count:])
+	}
+
+	c.t = c.t.Add(paymentWindow)
+	if _, err := svc.List(ctx, buyerID, ListParams{Limit: 20}); err != nil {
+		t.Fatal(err)
+	}
+	e = n.last(t, notification.TypeOrderCancelled)
+	if !slices.Equal(e.Recipients, []uuid.UUID{buyerID, jastiperID}) || e.Data["orderId"] != o.ID || e.Data["reason"] != "Payment deadline passed." {
+		t.Errorf("order.cancelled on expiry = %+v", e)
+	}
+}
+
+func TestCapacityIsReservedAndReleased(t *testing.T) {
+	c := newClock()
+	svc := newTestService(c)
+	ctx := t.Context()
+
+	o := createOrder(t, svc) // 3 of 10
+	if got := reserved(svc, "tokyo"); got != 3 {
+		t.Fatalf("reserved after create = %d, want 3", got)
+	}
+	if _, err := svc.Create(ctx, buyerID, "tokyo", CreateParams{ProductName: "Big", Quantity: 8}); !errors.Is(err, trip.ErrCapacityFull) {
+		t.Errorf("Create(8 of 7 left) error = %v, want trip.ErrCapacityFull", err)
+	}
+	if got := reserved(svc, "tokyo"); got != 3 {
+		t.Errorf("reserved after a refused create = %d, want 3", got)
+	}
+
+	if _, err := svc.Reject(ctx, jastiperID, o.ID, "Stok habis"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reserved(svc, "tokyo"); got != 0 {
+		t.Errorf("reserved after reject = %d, want 0", got)
+	}
+
+	cancelled := createOrder(t, svc)
+	_, _ = svc.Cancel(ctx, buyerID, cancelled.ID, "")
+	expired := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, expired.ID, 10_000, 0)
+	kept := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, kept.ID, 10_000, 0)
+	_, _ = svc.MarkPaid(ctx, kept.ID)
+	if got := reserved(svc, "tokyo"); got != 6 {
+		t.Fatalf("reserved with one approved and one paid order = %d, want 6", got)
+	}
+
+	c.t = c.t.Add(paymentWindow)
+	if _, err := svc.List(ctx, buyerID, ListParams{Limit: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reserved(svc, "tokyo"); got != 3 {
+		t.Errorf("reserved after expiry = %d, want 3 (the paid order)", got)
+	}
+	if _, err := svc.MarkRefunded(ctx, Actor{ID: jastiperID, Type: ActorJastiper}, kept.ID, "Tidak jadi berangkat"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reserved(svc, "tokyo"); got != 0 {
+		t.Errorf("reserved after refund = %d, want 0", got)
+	}
+}
+
+func TestSystemDeliversOnlyShippedOrders(t *testing.T) {
+	svc := newTestService(newClock())
+	ctx := t.Context()
+	o := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, o.ID, 10_000, 0)
+	_, _ = svc.MarkPaid(ctx, o.ID)
+
+	if _, err := svc.MarkDelivered(ctx, System, o.ID); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("MarkDelivered(system, paid) error = %v, want ErrInvalidTransition", err)
+	}
+	_, _ = svc.MarkShipped(ctx, jastiperID, o.ID)
+	got, err := svc.MarkDelivered(ctx, System, o.ID)
+	if err != nil || got.Status != StatusDelivered {
+		t.Fatalf("MarkDelivered(system, shipped) = %s, %v", got.Status, err)
+	}
+	_, events, _ := svc.Get(ctx, Actor{ID: buyerID, Type: ActorBuyer}, o.ID)
+	if last := events[len(events)-1]; last.ActorType != ActorSystem || last.ActorID != nil {
+		t.Errorf("last event = %+v, want a system event without actor ID", last)
+	}
+
+	disputed := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, disputed.ID, 10_000, 0)
+	_, _ = svc.MarkPaid(ctx, disputed.ID)
+	_, _ = svc.MarkShipped(ctx, jastiperID, disputed.ID)
+	_, _ = svc.MarkDisputed(ctx, buyerID, disputed.ID, "Rusak")
+	if _, err := svc.MarkDelivered(ctx, System, disputed.ID); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("MarkDelivered(system, disputed) error = %v, want ErrInvalidTransition", err)
+	}
+}
+
+func TestExpireUnpaidJob(t *testing.T) {
+	c := newClock()
+	svc := newTestService(c)
+	ctx := t.Context()
+	late := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, late.ID, 10_000, 0)
+	paid := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, paid.ID, 10_000, 0)
+	_, _ = svc.MarkPaid(ctx, paid.ID)
+	c.t = c.t.Add(time.Hour)
+	fresh := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, fresh.ID, 10_000, 0)
+
+	c.t = c.t.Add(paymentWindow - time.Minute)
+	for range 2 {
+		if err := svc.ExpireUnpaid(ctx); err != nil {
+			t.Fatalf("ExpireUnpaid() error = %v", err)
+		}
+	}
+	status := func(id uuid.UUID) Status {
+		o, _, _ := svc.Get(ctx, Actor{ID: buyerID, Type: ActorBuyer}, id)
+		return o.Status
+	}
+	if got := status(late.ID); got != StatusCancelled {
+		t.Errorf("late order = %s, want cancelled", got)
+	}
+	if got := status(paid.ID); got != StatusPaid {
+		t.Errorf("paid order = %s, want paid", got)
+	}
+	if got := status(fresh.ID); got != StatusApproved {
+		t.Errorf("order still inside its window = %s, want approved", got)
+	}
+	_, events, _ := svc.Get(ctx, Actor{ID: buyerID, Type: ActorBuyer}, late.ID)
+	cancels := 0
+	for _, e := range events {
+		if e.ToStatus == StatusCancelled {
+			cancels++
+			if e.ActorType != ActorSystem || e.Reason != deadlineReason {
+				t.Errorf("cancel event = %+v", e)
+			}
+		}
+	}
+	if cancels != 1 {
+		t.Errorf("cancel events after two runs = %d, want 1", cancels)
+	}
+	if got := reserved(svc, "tokyo"); got != 6 {
+		t.Errorf("reserved = %d, want 6 (paid and fresh orders keep theirs)", got)
+	}
+}
+
+func TestListForTrip(t *testing.T) {
+	svc := newTestService(newClock())
+	ctx := t.Context()
+	tokyo := svc.trips.(fakeTrips).trips["tokyo"]
+	first := createOrder(t, svc)
+	createOrder(t, svc)
+	_, _ = svc.Reject(ctx, jastiperID, first.ID, "Stok habis")
+
+	page, err := svc.ListForTrip(ctx, jastiperID, tokyo.ID, ListParams{Limit: 20})
+	if err != nil || len(page.Items) != 2 {
+		t.Fatalf("ListForTrip() = %d items, %v; want 2", len(page.Items), err)
+	}
+	page, _ = svc.ListForTrip(ctx, jastiperID, tokyo.ID, ListParams{Status: StatusRequested, Limit: 20})
+	if len(page.Items) != 1 || page.Items[0].Status != StatusRequested {
+		t.Errorf("ListForTrip(requested) = %+v", page.Items)
+	}
+	if _, err := svc.ListForTrip(ctx, uuid.New(), tokyo.ID, ListParams{Limit: 20}); !errors.Is(err, trip.ErrNotFound) {
+		t.Errorf("ListForTrip(other jastiper) error = %v, want trip.ErrNotFound", err)
+	}
+	if _, err := svc.ListForTrip(ctx, jastiperID, uuid.New(), ListParams{Limit: 20}); !errors.Is(err, trip.ErrNotFound) {
+		t.Errorf("ListForTrip(unknown trip) error = %v, want trip.ErrNotFound", err)
+	}
+}
+
+func TestCreateWithPhoto(t *testing.T) {
+	svc := newTestService(newClock())
+	ctx := t.Context()
+	photo := uuid.New()
+	o, err := svc.Create(ctx, buyerID, "tokyo", CreateParams{ProductName: "Kit Kat", Quantity: 1, PhotoUpload: &photo})
+	if err != nil || o.PhotoKey != "order_photo/"+photo.String()+".jpg" {
+		t.Fatalf("Create(photo) = %q, %v", o.PhotoKey, err)
+	}
+	if _, err := svc.Create(ctx, buyerID, "tokyo", CreateParams{ProductName: "X", Quantity: 1, PhotoUpload: &unknownUploadID}); !errors.Is(err, upload.ErrNotFound) {
+		t.Errorf("Create(unknown upload) error = %v, want upload.ErrNotFound", err)
 	}
 }

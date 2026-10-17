@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------- |
 | Package | `internal/order`                                                             |
 | Tag     | `order`                                                                      |
-| Status  | Partial: state machine and endpoints done; capacity, photo, notifications, trip inbox to do |
+| Status  | Done |
 
 ## Overview
 
@@ -153,7 +153,7 @@ users |o--o{ order_events : actor
 | `jastiper_id`      | `UUID` FK     | → `users.id`, `<> buyer_id`                              |
 | `product_name`     | `TEXT`        | ≤ 200                                                    |
 | `product_url`      | `TEXT`        | ≤ 2000, default `''`                                     |
-| `photo_key`        | `TEXT`        | Blob key, nullable (to add)                              |
+| `photo_key`        | `TEXT`        | Blob key, nullable                                       |
 | `quantity`         | `INTEGER`     | `> 0`; also the trip capacity this order reserves        |
 | `notes`            | `TEXT`        | ≤ 1000                                                   |
 | `item_price`       | `BIGINT`      | Per unit, set on approval                                |
@@ -187,9 +187,11 @@ users |o--o{ order_events : actor
 | `POST` | `/orders/{id}/approve`      | `approveOrder`       | `jastiper` (owner)          | Done   | Body `{ itemPrice, jastipFee }`              |
 | `POST` | `/orders/{id}/reject`       | `rejectOrder`        | `jastiper` (owner)          | Done   | Body `{ reason }`                            |
 | `POST` | `/orders/{id}/cancel`       | `cancelOrder`        | `buyer` (owner)             | Done   | Before payment only                          |
-| `GET`  | `/me/trips/{id}/orders`     | `listTripOrders`     | `jastiper` (owner)          | To do  | Jastiper inbox for one trip; filter `status`; cursor |
+| `GET`  | `/me/trips/{id}/orders`     | `listTripOrders`     | `jastiper` (owner)          | Done   | Jastiper inbox for one trip; filter `status`; cursor; another jastiper's trip is 404 |
 
-`createOrder` gains an optional `photoUploadId`; order responses gain a signed `photoUrl`.
+`createOrder` takes an optional `photoUploadId` (an upload with purpose `order_photo` owned by the buyer, attached in
+the create transaction; upload errors map to 422/503 as in the upload module). Order responses carry a signed
+`photoUrl`, omitted when there is no photo.
 
 Invalid transitions return `409 Conflict`; a full trip returns `409` with `Trip is full.`
 
@@ -307,13 +309,11 @@ Done:
 - [x] Order code generator (`TD-XXXXXX`, unique, retry on conflict).
 - [x] `createOrder`, `listOrders`, `getOrder` (with timeline), `approveOrder`, `rejectOrder`, `cancelOrder`.
 - [x] Unpaid orders past the deadline are cancelled on read and on checkout.
-
-Remaining:
-
-- [ ] Capacity: `trip.Reserve` on create, `trip.Release` on reject, cancel, expiry, and refund.
-- [ ] Transition `shipped → delivered` by the system, for auto-release.
-- [ ] Notifications (F07) inside each transition's transaction.
-- [ ] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
-- [ ] `GET /me/trips/{id}/orders`.
-- [ ] Job `orders.expire_unpaid`.
-- [ ] Integration test for concurrent transitions on the same order.
+- [x] Notifications (F07) inside each transition's transaction, including the expiry on read.
+- [x] Capacity: `trip.Reserve` on create, `trip.Release` on reject, cancel, expiry, and refund.
+- [x] Transition `shipped → delivered` by the system, for auto-release.
+- [x] `GET /me/trips/{id}/orders`.
+- [x] `photo_key` column, `photoUploadId` on create, `photoUrl` in responses.
+- [x] Job `orders.expire_unpaid` (every minute, up to 100 orders a run, one transaction each); `listOrders` runs the
+      same sweep and `getOrder` expires the order it reads.
+- [x] Integration test for concurrent transitions on the same order (approve against reject).

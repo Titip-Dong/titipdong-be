@@ -13,8 +13,8 @@ import (
 )
 
 const createShipment = `-- name: CreateShipment :exec
-INSERT INTO shipments (order_id, method, courier_code, tracking_number, handover_note, shipped_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO shipments (order_id, method, courier_code, tracking_number, handover_note, shipped_at, proof_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type CreateShipmentParams struct {
@@ -24,6 +24,7 @@ type CreateShipmentParams struct {
 	TrackingNumber string
 	HandoverNote   string
 	ShippedAt      time.Time
+	ProofKey       *string
 }
 
 func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) error {
@@ -34,12 +35,13 @@ func (q *Queries) CreateShipment(ctx context.Context, arg CreateShipmentParams) 
 		arg.TrackingNumber,
 		arg.HandoverNote,
 		arg.ShippedAt,
+		arg.ProofKey,
 	)
 	return err
 }
 
 const getShipment = `-- name: GetShipment :one
-SELECT order_id, method, courier_code, tracking_number, handover_note, shipped_at, delivered_at, created_at, updated_at FROM shipments
+SELECT order_id, method, courier_code, tracking_number, handover_note, shipped_at, delivered_at, created_at, updated_at, proof_key FROM shipments
 WHERE order_id = $1
 `
 
@@ -56,8 +58,45 @@ func (q *Queries) GetShipment(ctx context.Context, orderID uuid.UUID) (Shipment,
 		&i.DeliveredAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProofKey,
 	)
 	return i, err
+}
+
+const listShipmentsDueForRelease = `-- name: ListShipmentsDueForRelease :many
+SELECT s.order_id
+FROM shipments s
+JOIN orders o ON o.id = s.order_id
+WHERE s.delivered_at IS NULL
+  AND s.shipped_at <= $1::timestamptz
+  AND o.status = 'shipped'
+ORDER BY s.shipped_at, s.order_id
+LIMIT $2
+`
+
+type ListShipmentsDueForReleaseParams struct {
+	Cutoff   time.Time
+	RowLimit int32
+}
+
+func (q *Queries) ListShipmentsDueForRelease(ctx context.Context, arg ListShipmentsDueForReleaseParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listShipmentsDueForRelease, arg.Cutoff, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var order_id uuid.UUID
+		if err := rows.Scan(&order_id); err != nil {
+			return nil, err
+		}
+		items = append(items, order_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markShipmentDelivered = `-- name: MarkShipmentDelivered :exec

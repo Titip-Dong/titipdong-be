@@ -10,7 +10,49 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const adjustTripReservedCapacity = `-- name: AdjustTripReservedCapacity :exec
+UPDATE trips
+SET reserved_capacity = reserved_capacity + $1::integer, updated_at = now()
+WHERE id = $2
+`
+
+type AdjustTripReservedCapacityParams struct {
+	Units int32
+	ID    uuid.UUID
+}
+
+func (q *Queries) AdjustTripReservedCapacity(ctx context.Context, arg AdjustTripReservedCapacityParams) error {
+	_, err := q.db.Exec(ctx, adjustTripReservedCapacity, arg.Units, arg.ID)
+	return err
+}
+
+const cancelTrip = `-- name: CancelTrip :exec
+UPDATE trips
+SET status = 'cancelled', updated_at = now()
+WHERE id = $1
+`
+
+func (q *Queries) CancelTrip(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, cancelTrip, id)
+	return err
+}
+
+const closeExpiredTrips = `-- name: CloseExpiredTrips :execrows
+UPDATE trips
+SET status = 'closed', updated_at = now()
+WHERE status = 'open' AND request_deadline <= $1::timestamptz
+`
+
+func (q *Queries) CloseExpiredTrips(ctx context.Context, now time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, closeExpiredTrips, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
 
 const closeTrip = `-- name: CloseTrip :execrows
 UPDATE trips
@@ -26,11 +68,43 @@ func (q *Queries) CloseTrip(ctx context.Context, id uuid.UUID) (int64, error) {
 	return result.RowsAffected(), nil
 }
 
+const completeReturnedTrips = `-- name: CompleteReturnedTrips :execrows
+UPDATE trips t
+SET status = 'completed', updated_at = now()
+WHERE t.status = 'closed'
+  AND t.returns_on < $1::date
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.trip_id = t.id
+        AND o.status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed')
+  )
+`
+
+func (q *Queries) CompleteReturnedTrips(ctx context.Context, today time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, completeReturnedTrips, today)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const countActiveTripOrders = `-- name: CountActiveTripOrders :one
+SELECT count(*) FROM orders
+WHERE trip_id = $1 AND status IN ('requested', 'approved', 'paid', 'shipped', 'delivered', 'disputed')
+`
+
+func (q *Queries) CountActiveTripOrders(ctx context.Context, tripID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveTripOrders, tripID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createTrip = `-- name: CreateTrip :exec
 INSERT INTO trips (
     id, jastiper_id, slug, title, description, destination_city, destination_country,
-    departs_on, returns_on, request_deadline
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    departs_on, returns_on, request_deadline, capacity
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 `
 
 type CreateTripParams struct {
@@ -44,6 +118,7 @@ type CreateTripParams struct {
 	DepartsOn          time.Time
 	ReturnsOn          time.Time
 	RequestDeadline    time.Time
+	Capacity           int32
 }
 
 func (q *Queries) CreateTrip(ctx context.Context, arg CreateTripParams) error {
@@ -58,12 +133,13 @@ func (q *Queries) CreateTrip(ctx context.Context, arg CreateTripParams) error {
 		arg.DepartsOn,
 		arg.ReturnsOn,
 		arg.RequestDeadline,
+		arg.Capacity,
 	)
 	return err
 }
 
 const getTripByID = `-- name: GetTripByID :one
-SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, u.name AS jastiper_name
+SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, t.capacity, t.reserved_capacity, u.name AS jastiper_name
 FROM trips t
 JOIN users u ON u.id = t.jastiper_id
 WHERE t.id = $1
@@ -91,13 +167,15 @@ func (q *Queries) GetTripByID(ctx context.Context, id uuid.UUID) (GetTripByIDRow
 		&i.Trip.Status,
 		&i.Trip.CreatedAt,
 		&i.Trip.UpdatedAt,
+		&i.Trip.Capacity,
+		&i.Trip.ReservedCapacity,
 		&i.JastiperName,
 	)
 	return i, err
 }
 
 const getTripBySlug = `-- name: GetTripBySlug :one
-SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, u.name AS jastiper_name
+SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, t.capacity, t.reserved_capacity, u.name AS jastiper_name
 FROM trips t
 JOIN users u ON u.id = t.jastiper_id
 WHERE t.slug = $1
@@ -125,26 +203,33 @@ func (q *Queries) GetTripBySlug(ctx context.Context, slug string) (GetTripBySlug
 		&i.Trip.Status,
 		&i.Trip.CreatedAt,
 		&i.Trip.UpdatedAt,
+		&i.Trip.Capacity,
+		&i.Trip.ReservedCapacity,
 		&i.JastiperName,
 	)
 	return i, err
 }
 
 const listOpenTrips = `-- name: ListOpenTrips :many
-SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, u.name AS jastiper_name
+SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, t.capacity, t.reserved_capacity, u.name AS jastiper_name
 FROM trips t
 JOIN users u ON u.id = t.jastiper_id
 WHERE t.status = 'open'
   AND t.request_deadline > $1::timestamptz
+  AND t.reserved_capacity < t.capacity
   AND t.destination_city ILIKE $2::text || '%'
-  AND (t.departs_on, t.id) > ($3::date, $4::uuid)
+  AND ($3::date IS NULL OR t.departs_on >= $3::date)
+  AND ($4::date IS NULL OR t.departs_on <= $4::date)
+  AND (t.departs_on, t.id) > ($5::date, $6::uuid)
 ORDER BY t.departs_on, t.id
-LIMIT $5
+LIMIT $7
 `
 
 type ListOpenTripsParams struct {
 	Now            time.Time
 	City           string
+	DepartsFrom    pgtype.Date
+	DepartsTo      pgtype.Date
 	AfterDepartsOn time.Time
 	AfterID        uuid.UUID
 	RowLimit       int32
@@ -159,6 +244,8 @@ func (q *Queries) ListOpenTrips(ctx context.Context, arg ListOpenTripsParams) ([
 	rows, err := q.db.Query(ctx, listOpenTrips,
 		arg.Now,
 		arg.City,
+		arg.DepartsFrom,
+		arg.DepartsTo,
 		arg.AfterDepartsOn,
 		arg.AfterID,
 		arg.RowLimit,
@@ -184,6 +271,8 @@ func (q *Queries) ListOpenTrips(ctx context.Context, arg ListOpenTripsParams) ([
 			&i.Trip.Status,
 			&i.Trip.CreatedAt,
 			&i.Trip.UpdatedAt,
+			&i.Trip.Capacity,
+			&i.Trip.ReservedCapacity,
 			&i.JastiperName,
 		); err != nil {
 			return nil, err
@@ -197,7 +286,7 @@ func (q *Queries) ListOpenTrips(ctx context.Context, arg ListOpenTripsParams) ([
 }
 
 const listTripsByJastiper = `-- name: ListTripsByJastiper :many
-SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, u.name AS jastiper_name
+SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, t.capacity, t.reserved_capacity, u.name AS jastiper_name
 FROM trips t
 JOIN users u ON u.id = t.jastiper_id
 WHERE t.jastiper_id = $1
@@ -246,6 +335,8 @@ func (q *Queries) ListTripsByJastiper(ctx context.Context, arg ListTripsByJastip
 			&i.Trip.Status,
 			&i.Trip.CreatedAt,
 			&i.Trip.UpdatedAt,
+			&i.Trip.Capacity,
+			&i.Trip.ReservedCapacity,
 			&i.JastiperName,
 		); err != nil {
 			return nil, err
@@ -256,4 +347,75 @@ func (q *Queries) ListTripsByJastiper(ctx context.Context, arg ListTripsByJastip
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockTrip = `-- name: LockTrip :one
+SELECT t.id, t.jastiper_id, t.slug, t.title, t.description, t.destination_city, t.destination_country, t.departs_on, t.returns_on, t.request_deadline, t.status, t.created_at, t.updated_at, t.capacity, t.reserved_capacity, u.name AS jastiper_name
+FROM trips t
+JOIN users u ON u.id = t.jastiper_id
+WHERE t.id = $1
+FOR UPDATE OF t
+`
+
+type LockTripRow struct {
+	Trip         Trip
+	JastiperName string
+}
+
+func (q *Queries) LockTrip(ctx context.Context, id uuid.UUID) (LockTripRow, error) {
+	row := q.db.QueryRow(ctx, lockTrip, id)
+	var i LockTripRow
+	err := row.Scan(
+		&i.Trip.ID,
+		&i.Trip.JastiperID,
+		&i.Trip.Slug,
+		&i.Trip.Title,
+		&i.Trip.Description,
+		&i.Trip.DestinationCity,
+		&i.Trip.DestinationCountry,
+		&i.Trip.DepartsOn,
+		&i.Trip.ReturnsOn,
+		&i.Trip.RequestDeadline,
+		&i.Trip.Status,
+		&i.Trip.CreatedAt,
+		&i.Trip.UpdatedAt,
+		&i.Trip.Capacity,
+		&i.Trip.ReservedCapacity,
+		&i.JastiperName,
+	)
+	return i, err
+}
+
+const updateTrip = `-- name: UpdateTrip :exec
+UPDATE trips
+SET title = $2, description = $3, destination_city = $4, destination_country = $5, departs_on = $6,
+    returns_on = $7, request_deadline = $8, capacity = $9, updated_at = now()
+WHERE id = $1
+`
+
+type UpdateTripParams struct {
+	ID                 uuid.UUID
+	Title              string
+	Description        string
+	DestinationCity    string
+	DestinationCountry string
+	DepartsOn          time.Time
+	ReturnsOn          time.Time
+	RequestDeadline    time.Time
+	Capacity           int32
+}
+
+func (q *Queries) UpdateTrip(ctx context.Context, arg UpdateTripParams) error {
+	_, err := q.db.Exec(ctx, updateTrip,
+		arg.ID,
+		arg.Title,
+		arg.Description,
+		arg.DestinationCity,
+		arg.DestinationCountry,
+		arg.DepartsOn,
+		arg.ReturnsOn,
+		arg.RequestDeadline,
+		arg.Capacity,
+	)
+	return err
 }

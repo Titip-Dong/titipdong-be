@@ -36,6 +36,23 @@ func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshToken
 	return err
 }
 
+const deleteExpiredRefreshTokens = `-- name: DeleteExpiredRefreshTokens :execrows
+DELETE FROM refresh_tokens t
+WHERE t.expires_at < $1::timestamptz
+  AND NOT EXISTS (
+      SELECT 1 FROM refresh_tokens r
+      WHERE r.replaced_by = t.id AND r.expires_at >= $1::timestamptz
+  )
+`
+
+func (q *Queries) DeleteExpiredRefreshTokens(ctx context.Context, cutoff time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExpiredRefreshTokens, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getRefreshTokenByHashForUpdate = `-- name: GetRefreshTokenByHashForUpdate :one
 SELECT id, user_id, family_id, expires_at, revoked_at
 FROM refresh_tokens
@@ -90,6 +107,22 @@ type RevokeRefreshTokenFamilyParams struct {
 
 func (q *Queries) RevokeRefreshTokenFamily(ctx context.Context, arg RevokeRefreshTokenFamilyParams) error {
 	_, err := q.db.Exec(ctx, revokeRefreshTokenFamily, arg.RevokedAt, arg.FamilyID)
+	return err
+}
+
+const revokeUserRefreshTokens = `-- name: RevokeUserRefreshTokens :exec
+UPDATE refresh_tokens
+SET revoked_at = $1::timestamptz
+WHERE user_id = $2 AND revoked_at IS NULL
+`
+
+type RevokeUserRefreshTokensParams struct {
+	RevokedAt time.Time
+	UserID    uuid.UUID
+}
+
+func (q *Queries) RevokeUserRefreshTokens(ctx context.Context, arg RevokeUserRefreshTokensParams) error {
+	_, err := q.db.Exec(ctx, revokeUserRefreshTokens, arg.RevokedAt, arg.UserID)
 	return err
 }
 

@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -97,6 +98,21 @@ func (q *Queries) InsertLedgerTransaction(ctx context.Context, arg InsertLedgerT
 	return result.RowsAffected(), nil
 }
 
+const jastiperEscrowHeld = `-- name: JastiperEscrowHeld :one
+SELECT COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS held
+FROM ledger_entries e
+JOIN ledger_accounts a ON a.id = e.account_id
+JOIN orders o ON o.id = e.order_id
+WHERE a.kind = 'escrow' AND o.jastiper_id = $1
+`
+
+func (q *Queries) JastiperEscrowHeld(ctx context.Context, jastiperID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, jastiperEscrowHeld, jastiperID)
+	var held int64
+	err := row.Scan(&held)
+	return held, err
+}
+
 const ledgerAccountBalance = `-- name: LedgerAccountBalance :one
 SELECT COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS balance
 FROM ledger_entries e
@@ -116,6 +132,39 @@ func (q *Queries) LedgerAccountBalance(ctx context.Context, arg LedgerAccountBal
 	return balance, err
 }
 
+const ledgerBalancesByKind = `-- name: LedgerBalancesByKind :many
+SELECT a.kind,
+       COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS balance
+FROM ledger_accounts a
+LEFT JOIN ledger_entries e ON e.account_id = a.id
+GROUP BY a.kind
+`
+
+type LedgerBalancesByKindRow struct {
+	Kind    string
+	Balance int64
+}
+
+func (q *Queries) LedgerBalancesByKind(ctx context.Context) ([]LedgerBalancesByKindRow, error) {
+	rows, err := q.db.Query(ctx, ledgerBalancesByKind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []LedgerBalancesByKindRow
+	for rows.Next() {
+		var i LedgerBalancesByKindRow
+		if err := rows.Scan(&i.Kind, &i.Balance); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const ledgerOrderBalance = `-- name: LedgerOrderBalance :one
 SELECT COALESCE(SUM(CASE WHEN e.direction = 'credit' THEN e.amount ELSE -e.amount END), 0)::bigint AS balance
 FROM ledger_entries e
@@ -133,4 +182,68 @@ func (q *Queries) LedgerOrderBalance(ctx context.Context, arg LedgerOrderBalance
 	var balance int64
 	err := row.Scan(&balance)
 	return balance, err
+}
+
+const listUserAccountEntries = `-- name: ListUserAccountEntries :many
+SELECT e.id, e.direction, e.amount, e.order_id, e.created_at, t.kind AS transaction_kind, t.idempotency_key,
+       o.code AS order_code
+FROM ledger_entries e
+JOIN ledger_accounts a ON a.id = e.account_id
+JOIN ledger_transactions t ON t.id = e.transaction_id
+LEFT JOIN orders o ON o.id = e.order_id
+WHERE a.kind = $1::text AND a.user_id = $2::uuid AND e.id < $3::bigint
+ORDER BY e.id DESC
+LIMIT $4
+`
+
+type ListUserAccountEntriesParams struct {
+	Kind     string
+	UserID   uuid.UUID
+	BeforeID int64
+	RowLimit int32
+}
+
+type ListUserAccountEntriesRow struct {
+	ID              int64
+	Direction       string
+	Amount          int64
+	OrderID         *uuid.UUID
+	CreatedAt       time.Time
+	TransactionKind string
+	IdempotencyKey  string
+	OrderCode       *string
+}
+
+func (q *Queries) ListUserAccountEntries(ctx context.Context, arg ListUserAccountEntriesParams) ([]ListUserAccountEntriesRow, error) {
+	rows, err := q.db.Query(ctx, listUserAccountEntries,
+		arg.Kind,
+		arg.UserID,
+		arg.BeforeID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUserAccountEntriesRow
+	for rows.Next() {
+		var i ListUserAccountEntriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Direction,
+			&i.Amount,
+			&i.OrderID,
+			&i.CreatedAt,
+			&i.TransactionKind,
+			&i.IdempotencyKey,
+			&i.OrderCode,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

@@ -24,8 +24,8 @@ type repository interface {
 	UpdateStatus(ctx context.Context, o Order) error
 	InsertEvent(ctx context.Context, orderID uuid.UUID, e Event) error
 	Events(ctx context.Context, orderID uuid.UUID) ([]Event, error)
-	// ExpireUnpaid cancels every approved order whose payment deadline has passed.
-	ExpireUnpaid(ctx context.Context, now time.Time) error
+	// DueUnpaid returns approved orders whose payment deadline is at or before now, oldest deadline first.
+	DueUnpaid(ctx context.Context, now time.Time, limit int) ([]uuid.UUID, error)
 }
 
 type pgRepository struct {
@@ -55,6 +55,7 @@ func (r *pgRepository) CreateOrder(ctx context.Context, o Order) error {
 		ProductUrl:  o.ProductURL,
 		Quantity:    int32(o.Quantity),
 		Notes:       o.Notes,
+		PhotoKey:    nonEmpty(o.PhotoKey),
 	})
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "orders_code_key" {
@@ -148,8 +149,8 @@ func (r *pgRepository) Events(ctx context.Context, orderID uuid.UUID) ([]Event, 
 	return events, nil
 }
 
-func (r *pgRepository) ExpireUnpaid(ctx context.Context, now time.Time) error {
-	return r.q(ctx).ExpireUnpaidOrders(ctx, now)
+func (r *pgRepository) DueUnpaid(ctx context.Context, now time.Time, limit int) ([]uuid.UUID, error) {
+	return r.q(ctx).ListUnpaidPastDeadline(ctx, db.ListUnpaidPastDeadlineParams{Now: now, RowLimit: int32(limit)})
 }
 
 func toOrder(o db.Order, tripSlug, tripTitle, buyerName, jastiperName string) Order {
@@ -173,8 +174,23 @@ func toOrder(o db.Order, tripSlug, tripTitle, buyerName, jastiperName string) Or
 		Status:          Status(o.Status),
 		StatusReason:    o.StatusReason,
 		PaymentDeadline: o.PaymentDeadline,
+		PhotoKey:        deref(o.PhotoKey),
 		CreatedAt:       o.CreatedAt,
 	}
+}
+
+func nonEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func notFound(err error) error {
