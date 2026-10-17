@@ -323,7 +323,7 @@ users |o--o{ audit_logs : "acts in"
 
 ## 3. F01 Auth & User
 
-### `users` (exists, to extend: `status`, `phone`, `updated_at`)
+### `users` (exists)
 
 ```sql
 CREATE TABLE users (

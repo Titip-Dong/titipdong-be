@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -19,6 +20,13 @@ type newUser struct {
 	Email        string
 	PasswordHash string
 	Role         Role
+}
+
+// userUpdate changes only the non-nil fields; an empty Phone clears it.
+type userUpdate struct {
+	Name         *string
+	Phone        *string
+	PasswordHash *string
 }
 
 type refreshToken struct {
@@ -36,6 +44,9 @@ type repository interface {
 	// UserByEmail also returns the stored password hash.
 	UserByEmail(ctx context.Context, email string) (User, string, error)
 	UserByID(ctx context.Context, id uuid.UUID) (User, error)
+	SetUserStatus(ctx context.Context, id uuid.UUID, status Status) (User, error)
+	PasswordHash(ctx context.Context, id uuid.UUID) (string, error)
+	UpdateUser(ctx context.Context, id uuid.UUID, u userUpdate) (User, error)
 
 	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
 	CreateRefreshToken(ctx context.Context, t refreshToken, hash []byte) error
@@ -44,6 +55,8 @@ type repository interface {
 	RotateRefreshToken(ctx context.Context, oldID, newID uuid.UUID, at time.Time) error
 	RevokeRefreshTokenFamily(ctx context.Context, familyID uuid.UUID, at time.Time) error
 	RefreshTokenFamilyActive(ctx context.Context, familyID uuid.UUID) (bool, error)
+	RevokeUserRefreshTokens(ctx context.Context, userID uuid.UUID, at time.Time) error
+	DeleteExpiredRefreshTokens(ctx context.Context, before time.Time) (int64, error)
 }
 
 type pgRepository struct {
@@ -77,7 +90,7 @@ func (r *pgRepository) CreateUser(ctx context.Context, u newUser) (User, error) 
 		}
 		return User{}, err
 	}
-	return User{ID: row.ID, Name: row.Name, Email: row.Email, Role: Role(row.Role), CreatedAt: row.CreatedAt}, nil
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), nil
 }
 
 func (r *pgRepository) UserByEmail(ctx context.Context, email string) (User, string, error) {
@@ -85,7 +98,7 @@ func (r *pgRepository) UserByEmail(ctx context.Context, email string) (User, str
 	if err != nil {
 		return User{}, "", notFound(err)
 	}
-	return User{ID: row.ID, Name: row.Name, Email: row.Email, Role: Role(row.Role), CreatedAt: row.CreatedAt}, row.PasswordHash, nil
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), row.PasswordHash, nil
 }
 
 func (r *pgRepository) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -93,7 +106,35 @@ func (r *pgRepository) UserByID(ctx context.Context, id uuid.UUID) (User, error)
 	if err != nil {
 		return User{}, notFound(err)
 	}
-	return User{ID: row.ID, Name: row.Name, Email: row.Email, Role: Role(row.Role), CreatedAt: row.CreatedAt}, nil
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), nil
+}
+
+func (r *pgRepository) SetUserStatus(ctx context.Context, id uuid.UUID, status Status) (User, error) {
+	row, err := r.q(ctx).SetUserStatus(ctx, db.SetUserStatusParams{ID: id, Status: string(status)})
+	if err != nil {
+		return User{}, notFound(err)
+	}
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), nil
+}
+
+func (r *pgRepository) PasswordHash(ctx context.Context, id uuid.UUID) (string, error) {
+	hash, err := r.q(ctx).GetUserPasswordHash(ctx, id)
+	return hash, notFound(err)
+}
+
+func (r *pgRepository) UpdateUser(ctx context.Context, id uuid.UUID, u userUpdate) (User, error) {
+	p := db.UpdateUserParams{ID: id, PasswordHash: u.PasswordHash}
+	if u.Name != nil {
+		p.Name = pgtype.Text{String: *u.Name, Valid: true}
+	}
+	if u.Phone != nil {
+		p.SetPhone, p.Phone = true, *u.Phone
+	}
+	row, err := r.q(ctx).UpdateUser(ctx, p)
+	if err != nil {
+		return User{}, notFound(err)
+	}
+	return toUser(row.ID, row.Name, row.Email, row.Role, row.Status, row.Phone, row.CreatedAt), nil
 }
 
 func (r *pgRepository) CreateRefreshToken(ctx context.Context, t refreshToken, hash []byte) error {
@@ -131,6 +172,22 @@ func (r *pgRepository) RevokeRefreshTokenFamily(ctx context.Context, familyID uu
 
 func (r *pgRepository) RefreshTokenFamilyActive(ctx context.Context, familyID uuid.UUID) (bool, error) {
 	return r.q(ctx).RefreshTokenFamilyActive(ctx, familyID)
+}
+
+func (r *pgRepository) RevokeUserRefreshTokens(ctx context.Context, userID uuid.UUID, at time.Time) error {
+	return r.q(ctx).RevokeUserRefreshTokens(ctx, db.RevokeUserRefreshTokensParams{UserID: userID, RevokedAt: at})
+}
+
+func (r *pgRepository) DeleteExpiredRefreshTokens(ctx context.Context, before time.Time) (int64, error) {
+	return r.q(ctx).DeleteExpiredRefreshTokens(ctx, before)
+}
+
+func toUser(id uuid.UUID, name, email, role, status string, phone *string, createdAt time.Time) User {
+	u := User{ID: id, Name: name, Email: email, Role: Role(role), Status: Status(status), CreatedAt: createdAt}
+	if phone != nil {
+		u.Phone = *phone
+	}
+	return u
 }
 
 func notFound(err error) error {

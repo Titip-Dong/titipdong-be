@@ -22,3 +22,16 @@ WHERE family_id = sqlc.arg(family_id) AND revoked_at IS NULL;
 SELECT EXISTS (
     SELECT 1 FROM refresh_tokens WHERE family_id = $1 AND revoked_at IS NULL
 );
+
+-- name: RevokeUserRefreshTokens :exec
+UPDATE refresh_tokens
+SET revoked_at = sqlc.arg(revoked_at)::timestamptz
+WHERE user_id = sqlc.arg(user_id) AND revoked_at IS NULL;
+
+-- name: DeleteExpiredRefreshTokens :execrows
+DELETE FROM refresh_tokens t
+WHERE t.expires_at < sqlc.arg(cutoff)::timestamptz
+  AND NOT EXISTS (
+      SELECT 1 FROM refresh_tokens r
+      WHERE r.replaced_by = t.id AND r.expires_at >= sqlc.arg(cutoff)::timestamptz
+  );

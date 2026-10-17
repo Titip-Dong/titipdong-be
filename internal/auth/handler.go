@@ -41,7 +41,7 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Path:        "/auth/login",
 		Summary:     "Obtain a short-lived access token",
 		Tags:        []string{tag},
-		Errors:      []int{http.StatusUnauthorized, http.StatusUnprocessableEntity},
+		Errors:      []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusUnprocessableEntity},
 	}, h.login)
 
 	huma.Register(api, huma.Operation{
@@ -61,6 +61,16 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 		Tags:          []string{tag},
 		DefaultStatus: http.StatusNoContent,
 	}, h.logout)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "updateCurrentUser",
+		Method:      http.MethodPatch,
+		Path:        "/me",
+		Summary:     "Update the caller's name, phone, or password",
+		Tags:        []string{tag},
+		Security:    Security(),
+		Errors:      []int{http.StatusUnauthorized, http.StatusUnprocessableEntity},
+	}, h.updateMe)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "getCurrentUser",
@@ -90,7 +100,16 @@ type userResponse struct {
 	Name      string    `json:"name"`
 	Email     string    `json:"email" format:"email"`
 	Role      string    `json:"role" enum:"buyer,jastiper,admin"`
+	Status    string    `json:"status" enum:"active,suspended"`
+	Phone     string    `json:"phone,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+type updateUserRequest struct {
+	Name            *string `json:"name,omitempty" minLength:"1" maxLength:"100"`
+	Phone           *string `json:"phone,omitempty" maxLength:"20" pattern:"^\\+?[0-9]*$" doc:"Empty clears it"`
+	CurrentPassword string  `json:"currentPassword,omitempty" format:"password" maxLength:"128"`
+	NewPassword     string  `json:"newPassword,omitempty" format:"password" minLength:"8" maxLength:"128"`
 }
 
 type authResponse struct {
@@ -131,6 +150,8 @@ func (h *Handler) login(ctx context.Context, in *struct{ Body loginRequest }) (*
 	switch {
 	case errors.Is(err, ErrInvalidCredentials):
 		return nil, huma.Error401Unauthorized("Email or password is incorrect.")
+	case errors.Is(err, ErrSuspended):
+		return nil, huma.Error403Forbidden("This account is suspended.")
 	case err != nil:
 		return nil, err
 	}
@@ -199,6 +220,29 @@ func toAuthResponse(s Session) authResponse {
 	return authResponse{AccessToken: s.AccessToken, User: toUserResponse(s.User)}
 }
 
+func (h *Handler) updateMe(ctx context.Context, in *struct{ Body updateUserRequest }) (*struct{ Body userResponse }, error) {
+	p, _ := PrincipalFrom(ctx)
+	u, err := h.svc.UpdateProfile(ctx, p.UserID, UpdateParams{
+		Name:            in.Body.Name,
+		Phone:           in.Body.Phone,
+		CurrentPassword: in.Body.CurrentPassword,
+		NewPassword:     in.Body.NewPassword,
+	})
+	var inputErr *InputError
+	switch {
+	case errors.As(err, &inputErr):
+		return nil, huma.Error422UnprocessableEntity(inputErr.Detail)
+	case errors.Is(err, ErrInvalidCredentials):
+		return nil, huma.Error401Unauthorized("Current password is incorrect.")
+	case err != nil:
+		return nil, err
+	}
+	return &struct{ Body userResponse }{Body: toUserResponse(u)}, nil
+}
+
 func toUserResponse(u User) userResponse {
-	return userResponse{ID: u.ID, Name: u.Name, Email: u.Email, Role: string(u.Role), CreatedAt: u.CreatedAt}
+	return userResponse{
+		ID: u.ID, Name: u.Name, Email: u.Email, Role: string(u.Role), Status: string(u.Status), Phone: u.Phone,
+		CreatedAt: u.CreatedAt,
+	}
 }

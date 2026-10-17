@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------- |
 | Package | `internal/auth`                                                              |
 | Tag     | `auth`                                                                       |
-| Status  | Partial: session and middleware done; profile, account status, `create-admin` to do |
+| Status  | Done                                                                         |
 
 ## Overview
 
@@ -35,7 +35,9 @@ instead of calling this module over HTTP.
   `COOKIE_SECURE=false`), lifetime 30 days, only its SHA-256 hash is stored. Every use rotates it; presenting a token
   that was already rotated revokes the whole family.
 - Account status: `active` or `suspended`. Suspended users cannot log in or refresh, and suspension revokes their
-  refresh tokens. An access token already issued stays valid until it expires (at most 15 minutes).
+  refresh tokens. An access token already issued stays valid until it expires (at most 15 minutes). Login with the
+  right password for a suspended account returns 403 `This account is suspended.` (a wrong password stays 401, so
+  the status is never shown without the password); refresh returns 401 and revokes the family.
 - Missing or invalid token → 401 `Provide a valid access token.` Wrong role → 403
   `Your role cannot access this resource.`
 
@@ -88,10 +90,10 @@ refresh_tokens |o--o| refresh_tokens : replaced_by
 | `email`         | `TEXT`         | Stored lowercased, unique index on `LOWER(email)`            |
 | `password_hash` | `TEXT`         | Argon2id PHC string                                          |
 | `role`          | `VARCHAR(16)`  | `buyer`, `jastiper`, `admin`                                 |
-| `status`        | `TEXT`         | `active` (default) or `suspended` (to add)                   |
-| `phone`         | `TEXT`         | ≤ 20 chars, nullable (to add)                                |
+| `status`        | `TEXT`         | `active` (default) or `suspended`                            |
+| `phone`         | `TEXT`         | ≤ 20 chars, nullable                                         |
 | `created_at`    | `TIMESTAMPTZ`  | Default `now()`                                              |
-| `updated_at`    | `TIMESTAMPTZ`  | Set by the application (to add)                              |
+| `updated_at`    | `TIMESTAMPTZ`  | Set by the application                                       |
 
 ### `refresh_tokens`
 
@@ -124,7 +126,7 @@ refresh_tokens |o--o| refresh_tokens : replaced_by
 | `GET`   | `/me`            | `getCurrentUser` | Any role        | Done    | Profile of the caller                          |
 | `POST`  | `/auth/refresh`  | `refreshSession` | Refresh cookie  | Done    | Rotate the refresh token, return a new access token |
 | `POST`  | `/auth/logout`   | `logout`         | Refresh cookie  | Done    | Revoke the refresh token family, clear the cookie |
-| `PATCH` | `/me`            | `updateCurrentUser` | Any role     | To do   | Update name, phone, or password                |
+| `PATCH` | `/me`            | `updateCurrentUser` | Any role     | Done    | Update name, phone, or password                |
 
 ### Service methods for other modules
 
@@ -141,14 +143,18 @@ Request (`UpdateUserRequest`), every field optional:
 { "name": "Budi S.", "phone": "08123456789", "currentPassword": "rahasia123", "newPassword": "lebihrahasia456" }
 ```
 
-`newPassword` requires `currentPassword`. Response `200` (`UserResponse`). Errors: `401` wrong current password,
-`422` validation.
+`name` 1–100 (trimmed, not blank); `phone` up to 20 characters matching `^\+?[0-9]*$`, an empty string clears it;
+`newPassword` 8–128 and requires `currentPassword`. Response `200` (`UserResponse`). Errors: `401` `Current password
+is incorrect.`, `422` validation.
 
 ### CLI: `create-admin`
 
 ```sh
-go run ./cmd/api create-admin -name "Admin" -email admin@example.com   # password read from ADMIN_PASSWORD
+ADMIN_PASSWORD='…' go run ./cmd/api create-admin -name "Admin" -email admin@example.com
 ```
+
+Applies pending migrations first, like the server. The password (8–128 characters) comes from `ADMIN_PASSWORD` so it
+stays out of the shell history and the process list; an email already registered is refused.
 
 ### `POST /auth/register`
 
@@ -172,7 +178,10 @@ Errors: `409` email already registered, `422` validation (blank name, role not `
 ### `POST /auth/login`
 
 Request (`LoginRequest`): `{ "email": "...", "password": "..." }`. Response `200` is the same `AuthResponse`.
-Errors: `401` `Email or password is incorrect.`, `422` validation.
+Errors: `401` `Email or password is incorrect.`, `403` `This account is suspended.`, `422` validation.
+
+The user object in every auth response and `GET /me` also carries `status` (`active`/`suspended`) and `phone`
+(omitted when not set).
 
 ### `GET /me`
 
@@ -346,13 +355,12 @@ Done:
 - [x] Refresh tokens with rotation and reuse detection, `POST /auth/refresh`, `POST /auth/logout`; register and login
       set the cookie.
 - [x] `cmd/api seed-demo` for demo accounts.
-
-Remaining:
-
-- [ ] Migration adding `users.status`, `phone`, `updated_at`; login and refresh reject suspended users.
-- [ ] `SetStatus(ctx, userID, status)` for F08: refuses admins, revokes refresh tokens on suspend.
-- [ ] `PATCH /me` (name, phone, password change with the current password; a password change revokes all refresh
+- [x] Migration adding `users.status`, `phone`, `updated_at`; login and refresh reject suspended users.
+- [x] `SetStatus(ctx, userID, status)` for F08: refuses admins (`ErrAdminStatus`), revokes refresh tokens on suspend.
+- [x] `PATCH /me` (name, phone, password change with the current password; a password change revokes all refresh
       tokens).
-- [ ] `api create-admin` CLI command.
-- [ ] UUIDv7 for new users and refresh tokens (currently v4).
-- [ ] Job `auth.purge_tokens` deleting expired refresh tokens.
+- [x] `api create-admin` CLI command.
+- [x] UUIDv7 for new users, refresh tokens, and token families.
+- [x] Job `auth.purge_tokens` (hourly) deleting expired refresh tokens; a token still referenced by an unexpired
+      rotation is kept.
+

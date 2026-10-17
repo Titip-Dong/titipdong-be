@@ -14,17 +14,21 @@ import (
 // fakeRepository is an in-memory repository with the same error contract as
 // pgRepository.
 type fakeRepository struct {
-	mu     sync.Mutex
-	users  map[uuid.UUID]newUser
-	tokens map[string]refreshToken
-	now    time.Time
+	mu        sync.Mutex
+	users     map[uuid.UUID]newUser
+	suspended map[uuid.UUID]bool
+	phones    map[uuid.UUID]string
+	tokens    map[string]refreshToken
+	now       time.Time
 }
 
 func newFakeRepository() *fakeRepository {
 	return &fakeRepository{
-		users:  map[uuid.UUID]newUser{},
-		tokens: map[string]refreshToken{},
-		now:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		users:     map[uuid.UUID]newUser{},
+		suspended: map[uuid.UUID]bool{},
+		phones:    map[uuid.UUID]string{},
+		tokens:    map[string]refreshToken{},
+		now:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -59,6 +63,72 @@ func (r *fakeRepository) UserByID(_ context.Context, id uuid.UUID) (User, error)
 		return User{}, ErrUserNotFound
 	}
 	return r.toUser(u), nil
+}
+
+func (r *fakeRepository) SetUserStatus(_ context.Context, id uuid.UUID, status Status) (User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.users[id]
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+	r.suspended[id] = status == StatusSuspended
+	return r.toUser(u), nil
+}
+
+func (r *fakeRepository) PasswordHash(_ context.Context, id uuid.UUID) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.users[id]
+	if !ok {
+		return "", ErrUserNotFound
+	}
+	return u.PasswordHash, nil
+}
+
+func (r *fakeRepository) UpdateUser(_ context.Context, id uuid.UUID, upd userUpdate) (User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	u, ok := r.users[id]
+	if !ok {
+		return User{}, ErrUserNotFound
+	}
+	if upd.Name != nil {
+		u.Name = *upd.Name
+	}
+	if upd.Phone != nil {
+		r.phones[id] = *upd.Phone
+	}
+	if upd.PasswordHash != nil {
+		u.PasswordHash = *upd.PasswordHash
+	}
+	r.users[id] = u
+	return r.toUser(u), nil
+}
+
+func (r *fakeRepository) RevokeUserRefreshTokens(_ context.Context, userID uuid.UUID, at time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for h, t := range r.tokens {
+		if t.UserID == userID && t.RevokedAt.IsZero() {
+			t.RevokedAt = at
+			r.tokens[h] = t
+		}
+	}
+	return nil
+}
+
+func (r *fakeRepository) DeleteExpiredRefreshTokens(_ context.Context, before time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int64
+	for h, t := range r.tokens {
+		if t.ExpiresAt.Before(before) {
+			delete(r.tokens, h)
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (r *fakeRepository) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
@@ -118,7 +188,11 @@ func (r *fakeRepository) RefreshTokenFamilyActive(_ context.Context, familyID uu
 }
 
 func (r *fakeRepository) toUser(u newUser) User {
-	return User{ID: u.ID, Name: u.Name, Email: u.Email, Role: u.Role, CreatedAt: r.now}
+	status := StatusActive
+	if r.suspended[u.ID] {
+		status = StatusSuspended
+	}
+	return User{ID: u.ID, Name: u.Name, Email: u.Email, Role: u.Role, Status: status, Phone: r.phones[u.ID], CreatedAt: r.now}
 }
 
 const testSecret = "test-secret-that-is-at-least-32-bytes"
@@ -300,5 +374,135 @@ func TestLogoutRevokesToken(t *testing.T) {
 	}
 	if err := svc.Logout(t.Context(), "unknown"); err != nil {
 		t.Errorf("Logout(unknown) error = %v, want nil", err)
+	}
+}
+
+func TestSuspendedUserCannotLoginOrRefresh(t *testing.T) {
+	repo := newFakeRepository()
+	svc := newService(repo, newTokens([]byte(testSecret), accessTokenLifetime, func() time.Time { return repo.now }))
+	ctx := t.Context()
+	sess, err := svc.Register(ctx, RegisterParams{Name: "Budi", Email: "budi@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.User.Status != StatusActive {
+		t.Errorf("new user status = %s, want active", sess.User.Status)
+	}
+	repo.suspended[sess.User.ID] = true
+
+	if _, err := svc.Login(ctx, "budi@example.com", "wrong-password"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("Login(suspended, wrong password) error = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Login(ctx, "budi@example.com", "rahasia123"); !errors.Is(err, ErrSuspended) {
+		t.Errorf("Login(suspended) error = %v, want ErrSuspended", err)
+	}
+	if _, err := svc.Refresh(ctx, sess.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh(suspended) error = %v, want ErrInvalidRefreshToken", err)
+	}
+	if active, _ := repo.RefreshTokenFamilyActive(ctx, repo.tokens[string(hashRefreshToken(sess.RefreshToken))].FamilyID); active {
+		t.Error("refresh family still active after a suspended refresh")
+	}
+}
+
+func TestSetStatus(t *testing.T) {
+	repo := newFakeRepository()
+	svc := newService(repo, newTokens([]byte(testSecret), accessTokenLifetime, func() time.Time { return repo.now }))
+	ctx := t.Context()
+	sess, err := svc.Register(ctx, RegisterParams{Name: "Sari", Email: "sari@example.com", Password: "rahasia123", Role: RoleJastiper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.Login(ctx, "sari@example.com", "rahasia123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := svc.SetStatus(ctx, sess.User.ID, StatusSuspended)
+	if err != nil || u.Status != StatusSuspended {
+		t.Fatalf("SetStatus(suspended) = %+v, %v", u, err)
+	}
+	for _, raw := range []string{sess.RefreshToken, second.RefreshToken} {
+		if _, err := svc.Refresh(ctx, raw); !errors.Is(err, ErrInvalidRefreshToken) {
+			t.Errorf("Refresh after suspension error = %v, want ErrInvalidRefreshToken", err)
+		}
+	}
+	if u, err := svc.SetStatus(ctx, sess.User.ID, StatusActive); err != nil || u.Status != StatusActive {
+		t.Fatalf("SetStatus(active) = %+v, %v", u, err)
+	}
+	if _, err := svc.Login(ctx, "sari@example.com", "rahasia123"); err != nil {
+		t.Errorf("Login after reactivation error = %v", err)
+	}
+
+	admin, err := svc.createUser(ctx, RegisterParams{Name: "Admin", Email: "admin@example.com", Password: "rahasia123", Role: RoleAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetStatus(ctx, admin.ID, StatusSuspended); !errors.Is(err, ErrAdminStatus) {
+		t.Errorf("SetStatus(admin) error = %v, want ErrAdminStatus", err)
+	}
+	if _, err := svc.SetStatus(ctx, uuid.New(), StatusSuspended); !errors.Is(err, ErrUserNotFound) {
+		t.Errorf("SetStatus(unknown) error = %v, want ErrUserNotFound", err)
+	}
+	var inputErr *InputError
+	if _, err := svc.SetStatus(ctx, sess.User.ID, "banned"); !errors.As(err, &inputErr) {
+		t.Errorf("SetStatus(banned) error = %v, want *InputError", err)
+	}
+}
+
+func TestUpdateProfile(t *testing.T) {
+	repo := newFakeRepository()
+	svc := newService(repo, newTokens([]byte(testSecret), accessTokenLifetime, func() time.Time { return repo.now }))
+	ctx := t.Context()
+	sess, err := svc.Register(ctx, RegisterParams{Name: "Budi", Email: "budi@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := sess.User.ID
+	ptr := func(s string) *string { return &s }
+
+	u, err := svc.UpdateProfile(ctx, id, UpdateParams{Name: ptr("  Budi S. "), Phone: ptr("08123456789")})
+	if err != nil || u.Name != "Budi S." || u.Phone != "08123456789" {
+		t.Fatalf("UpdateProfile(name, phone) = %+v, %v", u, err)
+	}
+	if u, _ := svc.UpdateProfile(ctx, id, UpdateParams{Phone: ptr("")}); u.Phone != "" || u.Name != "Budi S." {
+		t.Errorf("clearing phone = %+v, want empty phone and the name kept", u)
+	}
+	var inputErr *InputError
+	if _, err := svc.UpdateProfile(ctx, id, UpdateParams{Name: ptr("   ")}); !errors.As(err, &inputErr) {
+		t.Errorf("UpdateProfile(blank name) error = %v, want *InputError", err)
+	}
+	if _, err := svc.UpdateProfile(ctx, id, UpdateParams{NewPassword: "lebihrahasia456"}); !errors.As(err, &inputErr) {
+		t.Errorf("UpdateProfile(new password alone) error = %v, want *InputError", err)
+	}
+	if _, err := svc.UpdateProfile(ctx, id, UpdateParams{CurrentPassword: "salah", NewPassword: "lebihrahasia456"}); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("UpdateProfile(wrong current) error = %v, want ErrInvalidCredentials", err)
+	}
+
+	if _, err := svc.UpdateProfile(ctx, id, UpdateParams{CurrentPassword: "rahasia123", NewPassword: "lebihrahasia456"}); err != nil {
+		t.Fatalf("UpdateProfile(password) error = %v", err)
+	}
+	if _, err := svc.Refresh(ctx, sess.RefreshToken); !errors.Is(err, ErrInvalidRefreshToken) {
+		t.Errorf("Refresh after password change error = %v, want ErrInvalidRefreshToken", err)
+	}
+	if _, err := svc.Login(ctx, "budi@example.com", "rahasia123"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Errorf("Login(old password) error = %v, want ErrInvalidCredentials", err)
+	}
+	if _, err := svc.Login(ctx, "budi@example.com", "lebihrahasia456"); err != nil {
+		t.Errorf("Login(new password) error = %v", err)
+	}
+}
+
+func TestNewIDsAreVersion7(t *testing.T) {
+	repo := newFakeRepository()
+	svc := newService(repo, newTokens([]byte(testSecret), accessTokenLifetime, func() time.Time { return repo.now }))
+	sess, err := svc.Register(t.Context(), RegisterParams{Name: "Budi", Email: "budi@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := repo.tokens[string(hashRefreshToken(sess.RefreshToken))]
+	for name, id := range map[string]uuid.UUID{"user": sess.User.ID, "token": tok.ID, "family": tok.FamilyID} {
+		if id.Version() != 7 {
+			t.Errorf("%s ID version = %d, want 7", name, id.Version())
+		}
 	}
 }

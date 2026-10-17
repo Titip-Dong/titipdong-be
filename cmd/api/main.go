@@ -71,6 +71,9 @@ func run(cfg config.Config) error {
 	if len(os.Args) > 1 && os.Args[1] == "seed-demo" {
 		return seedDemo(ctx, pool)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "create-admin" {
+		return createAdmin(ctx, pool, os.Args[2:])
+	}
 
 	store, err := blobStore(ctx, cfg)
 	if err != nil {
@@ -151,5 +154,6 @@ func registerRoutes(api huma.API, pool *pgxpool.Pool, cfg config.Config, store *
 	return []jobs.Job{
 		{Name: "uploads.purge_pending", Every: time.Hour, Run: uploadService.PurgePending},
 		{Name: "orders.auto_release", Every: 5 * time.Minute, Run: shipmentService.AutoRelease},
+		{Name: "auth.purge_tokens", Every: time.Hour, Run: authService.PurgeExpiredTokens},
 	}
 }

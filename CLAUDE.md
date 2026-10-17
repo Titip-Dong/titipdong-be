@@ -26,7 +26,7 @@ make migration name=create_foo          # new goose migration in db/migrations
 make sqlc                               # regenerate internal/db after changing db/queries or migrations
 ```
 
-DB-backed integration tests (`internal/payment/integration_test.go`, `internal/shipment/service_test.go`,
+DB-backed integration tests (`internal/*/integration_test.go`, `internal/shipment/*_test.go`,
 `internal/platform/database/tx_test.go`) skip unless `TEST_DATABASE_URL` is set, e.g.
 `TEST_DATABASE_URL=$DATABASE_URL go test ./internal/payment -v`.
 
