@@ -115,6 +115,19 @@ type RefreshToken struct {
 	CreatedAt  time.Time
 }
 
+type Refund struct {
+	ID               uuid.UUID
+	OrderID          uuid.UUID
+	PaymentID        uuid.UUID
+	Amount           int64
+	Reason           string
+	Status           string
+	ProviderRefundID *string
+	FailureReason    *string
+	CreatedAt        time.Time
+	CompletedAt      *time.Time
+}
+
 type Shipment struct {
 	OrderID        uuid.UUID
 	Method         string

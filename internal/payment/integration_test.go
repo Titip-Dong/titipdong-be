@@ -12,6 +12,7 @@ import (
 	"github.com/Titip-Dong/titipdong-be/internal/db"
 	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/audit"
 	"github.com/Titip-Dong/titipdong-be/internal/platform/database"
 	"github.com/Titip-Dong/titipdong-be/internal/trip"
 	"github.com/google/uuid"
@@ -59,10 +60,21 @@ func newFixture(t *testing.T, now func() time.Time) fixture {
 		pool:     pool,
 		notifier: notifier,
 		orders:   orders,
-		svc:      newService(newRepository(pool), orders, notifier, FakeGateway{}, now),
+		svc:      newService(newRepository(pool), orders, notifier, audit.NewWriter(pool), FakeGateway{}, now),
 		buyer:    user(auth.RoleBuyer),
 		jastiper: user(auth.RoleJastiper),
 	}
+}
+
+func (f fixture) admin(t *testing.T) uuid.UUID {
+	t.Helper()
+	u, err := auth.Provision(context.Background(), f.pool, auth.RegisterParams{
+		Name: "admin", Email: uuid.NewString() + "@test.local", Password: "password123", Role: auth.RoleAdmin,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.ID
 }
 
 // approvedOrder creates an order approved for quantity × itemPrice + fee.
@@ -102,12 +114,42 @@ func (f fixture) remainingCapacity(t *testing.T, tripID uuid.UUID) int {
 }
 
 func (f fixture) escrow(t *testing.T, orderID uuid.UUID) int64 {
+	return f.orderBalance(t, accountEscrow, orderID)
+}
+
+func (f fixture) orderBalance(t *testing.T, kind accountKind, orderID uuid.UUID) int64 {
 	t.Helper()
-	b, err := db.New(f.pool).LedgerOrderBalance(context.Background(), db.LedgerOrderBalanceParams{Kind: "escrow", OrderID: &orderID})
+	b, err := db.New(f.pool).LedgerOrderBalance(context.Background(), db.LedgerOrderBalanceParams{Kind: string(kind), OrderID: &orderID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// paidOrder is an approved order the buyer has paid.
+func (f fixture) paidOrder(t *testing.T, quantity int, itemPrice, fee int64) order.Order {
+	t.Helper()
+	ctx := context.Background()
+	o := f.approvedOrder(t, quantity, itemPrice, fee)
+	p, err := f.svc.Checkout(ctx, f.buyer, o.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SimulatePaid(ctx, f.buyer, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+func (f fixture) auditCount(t *testing.T, action string, orderID uuid.UUID) int {
+	t.Helper()
+	var n int
+	err := f.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM audit_logs WHERE action = $1 AND target_type = 'order' AND target_id = $2`, action, orderID.String()).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 // notifications returns the user's notifications of type typ, newest first.
@@ -278,5 +320,127 @@ func TestOrderCannotOverbookTrip(t *testing.T) {
 	}
 	if _, err := f.orders.Create(ctx, f.buyer, tr.Slug, order.CreateParams{ProductName: "One more", Quantity: 10}); err != nil {
 		t.Errorf("Create(after cancel freed the trip) error = %v", err)
+	}
+}
+
+func TestCancelPaidRefundsBuyer(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.paidOrder(t, 2, 50_000, 10_000) // total 110.000
+
+	if _, err := f.svc.CancelPaid(ctx, f.jastiper, o.ID, "  "); err == nil {
+		t.Error("CancelPaid(blank reason) succeeded")
+	}
+	if _, err := f.svc.CancelPaid(ctx, uuid.New(), o.ID, "Tidak jadi berangkat"); !errors.Is(err, order.ErrNotFound) {
+		t.Errorf("CancelPaid(other jastiper) error = %v, want order.ErrNotFound", err)
+	}
+
+	rf, err := f.svc.CancelPaid(ctx, f.jastiper, o.ID, "Tidak jadi berangkat")
+	if err != nil {
+		t.Fatalf("CancelPaid() error = %v", err)
+	}
+	if rf.Amount != 110_000 || rf.Status != RefundSucceeded || rf.Reason != RefundJastiperCancelled || rf.CompletedAt == nil {
+		t.Errorf("refund = %+v", rf)
+	}
+	got, _, err := f.orders.Get(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID)
+	if err != nil || got.Status != order.StatusRefunded || got.StatusReason != "Tidak jadi berangkat" {
+		t.Fatalf("order = %s %q, %v; want refunded with the reason", got.Status, got.StatusReason, err)
+	}
+	f.assertSettled(t, o.ID)
+	if left := f.remainingCapacity(t, o.TripID); left != 10 {
+		t.Errorf("remaining capacity after refund = %d, want 10", left)
+	}
+	if n := f.notifications(t, f.buyer, notification.TypeOrderRefunded); len(n) != 1 || n[0].Data["amount"] != float64(110_000) {
+		t.Errorf("buyer order.refunded = %+v, want one", n)
+	}
+	if n := f.notifications(t, f.jastiper, notification.TypeOrderRefunded); len(n) != 0 {
+		t.Errorf("jastiper notified about their own cancellation: %+v", n)
+	}
+	if n := f.auditCount(t, "order.refunded", o.ID); n != 1 {
+		t.Errorf("order.refunded audit rows = %d, want 1", n)
+	}
+
+	if _, err := f.svc.CancelPaid(ctx, f.jastiper, o.ID, "Lagi"); !errors.Is(err, order.ErrInvalidTransition) {
+		t.Errorf("CancelPaid(again) error = %v, want ErrInvalidTransition", err)
+	}
+	f.assertSettled(t, o.ID)
+	if n := f.auditCount(t, "order.refunded", o.ID); n != 1 {
+		t.Errorf("audit rows after a refused retry = %d, want 1", n)
+	}
+
+	unpaid := f.approvedOrder(t, 1, 10_000, 0)
+	if _, err := f.svc.CancelPaid(ctx, f.jastiper, unpaid.ID, "Batal"); !errors.Is(err, order.ErrInvalidTransition) {
+		t.Errorf("CancelPaid(approved) error = %v, want ErrInvalidTransition", err)
+	}
+}
+
+// assertSettled checks that a refunded order's money went back out through the gateway.
+func (f fixture) assertSettled(t *testing.T, orderID uuid.UUID) {
+	t.Helper()
+	for _, kind := range []accountKind{accountEscrow, accountBuyerRefundable, accountGatewayClearing} {
+		if b := f.orderBalance(t, kind, orderID); b != 0 {
+			t.Errorf("%s balance for the order = %d, want 0", kind, b)
+		}
+	}
+}
+
+func TestAdminRefundsDisputedOrder(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.paidOrder(t, 1, 80_000, 20_000)
+	if _, err := f.orders.MarkShipped(ctx, f.jastiper, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.orders.MarkDisputed(ctx, f.buyer, o.ID, "Barang rusak"); err != nil {
+		t.Fatal(err)
+	}
+	admin := order.Actor{ID: f.admin(t), Type: order.ActorAdmin}
+
+	rf, err := f.svc.Refund(ctx, admin, o.ID, RefundDispute, "Barang rusak saat diterima")
+	if err != nil {
+		t.Fatalf("Refund() error = %v", err)
+	}
+	if rf.Amount != 100_000 || rf.Status != RefundSucceeded || rf.Reason != RefundDispute {
+		t.Errorf("refund = %+v", rf)
+	}
+	f.assertSettled(t, o.ID)
+	for _, user := range []uuid.UUID{f.buyer, f.jastiper} {
+		if n := f.notifications(t, user, notification.TypeOrderRefunded); len(n) != 1 {
+			t.Errorf("order.refunded for %s = %+v, want one", user, n)
+		}
+	}
+	if _, err := f.svc.Release(ctx, o.ID); !errors.Is(err, order.ErrInvalidTransition) {
+		t.Errorf("Release(refunded) error = %v, want ErrInvalidTransition", err)
+	}
+}
+
+type failingRefunds struct{ FakeGateway }
+
+func (failingRefunds) Refund(context.Context, RefundRequest) (RefundResult, error) {
+	return RefundResult{}, errors.New("gateway unavailable")
+}
+
+func TestRefundGatewayFailureKeepsDebtToBuyer(t *testing.T) {
+	f := newFixture(t, time.Now)
+	ctx := context.Background()
+	o := f.paidOrder(t, 1, 40_000, 0)
+	svc := newService(newRepository(f.pool), f.orders, f.notifier, audit.NewWriter(f.pool), failingRefunds{}, time.Now)
+
+	rf, err := svc.CancelPaid(ctx, f.jastiper, o.ID, "Stok habis")
+	if err != nil {
+		t.Fatalf("CancelPaid() error = %v", err)
+	}
+	if rf.Status != RefundFailed || rf.FailureReason != "gateway unavailable" {
+		t.Errorf("refund = %+v, want failed with the gateway error", rf)
+	}
+	if b := f.orderBalance(t, accountBuyerRefundable, o.ID); b != 40_000 {
+		t.Errorf("buyer_refundable for the order = %d, want 40000", b)
+	}
+	if b := f.escrow(t, o.ID); b != 0 {
+		t.Errorf("escrow = %d, want 0", b)
+	}
+	got, _, _ := f.orders.Get(ctx, order.Actor{ID: f.buyer, Type: order.ActorBuyer}, o.ID)
+	if got.Status != order.StatusRefunded {
+		t.Errorf("order status = %s, want refunded", got.Status)
 	}
 }

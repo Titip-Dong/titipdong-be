@@ -5,10 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Titip-Dong/titipdong-be/internal/notification"
 	"github.com/Titip-Dong/titipdong-be/internal/order"
+	"github.com/Titip-Dong/titipdong-be/internal/platform/audit"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -23,6 +26,21 @@ const (
 
 const platformFeePercent = 5
 
+type RefundReason string
+
+const (
+	RefundJastiperCancelled RefundReason = "jastiper_cancelled"
+	RefundDispute           RefundReason = "dispute_refund"
+)
+
+type RefundStatus string
+
+const (
+	RefundPending   RefundStatus = "pending"
+	RefundSucceeded RefundStatus = "succeeded"
+	RefundFailed    RefundStatus = "failed"
+)
+
 var (
 	ErrNotFound         = errors.New("payment not found")
 	ErrOrderNotPayable  = errors.New("order is not awaiting payment")
@@ -31,16 +49,37 @@ var (
 	ErrSimulateDisabled = errors.New("payment simulation is disabled")
 )
 
+type InputError struct {
+	Detail string
+}
+
+func (e *InputError) Error() string {
+	return "invalid input: " + e.Detail
+}
+
 type Payment struct {
 	ID            uuid.UUID
 	OrderID       uuid.UUID
 	Amount        int64
 	Provider      string
+	ProviderTxID  string
 	Status        Status
 	CheckoutToken string
 	CheckoutURL   string
 	ExpiresAt     time.Time
 	PaidAt        *time.Time
+}
+
+type Refund struct {
+	ID               uuid.UUID
+	OrderID          uuid.UUID
+	PaymentID        uuid.UUID
+	Amount           int64
+	Reason           RefundReason
+	Status           RefundStatus
+	ProviderRefundID string
+	FailureReason    string
+	CompletedAt      *time.Time
 }
 
 type Service interface {
@@ -53,22 +92,32 @@ type Service interface {
 	// Release moves a delivered order's escrow to the jastiper and the platform fee.
 	Release(ctx context.Context, orderID uuid.UUID) (order.Order, error)
 	JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error)
+	// Refund returns a paid or disputed order's whole total to the buyer and marks the order refunded.
+	// note becomes the order's status reason.
+	Refund(ctx context.Context, actor order.Actor, orderID uuid.UUID, reason RefundReason, note string) (Refund, error)
+	// CancelPaid is the jastiper cancelling a paid order, which refunds the buyer.
+	CancelPaid(ctx context.Context, jastiperID, orderID uuid.UUID, note string) (Refund, error)
+}
+
+type auditWriter interface {
+	Write(ctx context.Context, e audit.Entry) error
 }
 
 func NewService(pool *pgxpool.Pool, orders order.Service, notifier notification.Service, gw Gateway) Service {
-	return newService(newRepository(pool), orders, notifier, gw, time.Now)
+	return newService(newRepository(pool), orders, notifier, audit.NewWriter(pool), gw, time.Now)
 }
 
 type service struct {
 	repo     repository
 	orders   order.Service
 	notifier notification.Service
+	audit    auditWriter
 	gateway  Gateway
 	now      func() time.Time
 }
 
-func newService(repo repository, orders order.Service, notifier notification.Service, gw Gateway, now func() time.Time) *service {
-	return &service{repo: repo, orders: orders, notifier: notifier, gateway: gw, now: now}
+func newService(repo repository, orders order.Service, notifier notification.Service, aw auditWriter, gw Gateway, now func() time.Time) *service {
+	return &service{repo: repo, orders: orders, notifier: notifier, audit: aw, gateway: gw, now: now}
 }
 
 func (s *service) Checkout(ctx context.Context, buyerID, orderID uuid.UUID) (Payment, error) {
@@ -232,6 +281,114 @@ func (s *service) Release(ctx context.Context, orderID uuid.UUID) (order.Order, 
 		})
 	})
 	return released, err
+}
+
+func (s *service) Refund(ctx context.Context, actor order.Actor, orderID uuid.UUID, reason RefundReason, note string) (Refund, error) {
+	var rf Refund
+	err := s.repo.WithTx(ctx, func(ctx context.Context) error {
+		// MarkRefunded checks ownership and the transition before any money moves.
+		o, err := s.orders.MarkRefunded(ctx, actor, orderID, note)
+		if err != nil {
+			return err
+		}
+		p, err := s.repo.PaidByOrder(ctx, orderID)
+		if err != nil {
+			return err
+		}
+		rf = Refund{
+			ID:        uuid.Must(uuid.NewV7()),
+			OrderID:   orderID,
+			PaymentID: p.ID,
+			Amount:    p.Amount,
+			Reason:    reason,
+			Status:    RefundPending,
+		}
+		if err := s.repo.CreateRefund(ctx, rf); err != nil {
+			return err
+		}
+		err = s.post(ctx, ledgerTransaction{
+			Kind:           "refund",
+			OrderID:        orderID,
+			IdempotencyKey: "refund:" + orderID.String(),
+			Entries: []entry{
+				{Account: account{Kind: accountEscrow}, Direction: debit, Amount: rf.Amount},
+				{Account: account{Kind: accountBuyerRefundable, UserID: &o.BuyerID}, Direction: credit, Amount: rf.Amount},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		if err := s.settleRefund(ctx, &rf, p, o.BuyerID); err != nil {
+			return err
+		}
+
+		recipients := []uuid.UUID{o.BuyerID, o.JastiperID}
+		if actor.Type == order.ActorJastiper {
+			recipients = []uuid.UUID{o.BuyerID}
+		}
+		err = s.notifier.Notify(ctx, notification.Event{
+			Type:       notification.TypeOrderRefunded,
+			Recipients: recipients,
+			Data:       map[string]any{"orderId": o.ID, "orderCode": o.Code, "amount": rf.Amount},
+		})
+		if err != nil {
+			return err
+		}
+		return s.audit.Write(ctx, audit.Entry{
+			ActorID:    actorID(actor),
+			ActorType:  string(actor.Type),
+			Action:     "order.refunded",
+			TargetType: "order",
+			TargetID:   orderID.String(),
+			Metadata: map[string]any{
+				"refundId": rf.ID, "amount": rf.Amount, "reason": rf.Reason, "refundStatus": rf.Status,
+			},
+		})
+	})
+	return rf, err
+}
+
+// settleRefund pays the refund out through the gateway. A gateway failure is recorded, not returned: the order
+// stays refunded and the debt stays in buyer_refundable for an admin to settle.
+func (s *service) settleRefund(ctx context.Context, rf *Refund, p Payment, buyerID uuid.UUID) error {
+	res, gwErr := s.gateway.Refund(ctx, RefundRequest{
+		RefundID: rf.ID, PaymentID: p.ID, ProviderTransactionID: p.ProviderTxID, Amount: rf.Amount,
+	})
+	at := s.now()
+	rf.CompletedAt = &at
+	if gwErr != nil {
+		rf.Status, rf.FailureReason = RefundFailed, gwErr.Error()
+		slog.ErrorContext(ctx, "gateway_refund_failed", "refund_id", rf.ID, "error", gwErr)
+		return s.repo.MarkRefundFailed(ctx, rf.ID, rf.FailureReason, at)
+	}
+	rf.Status, rf.ProviderRefundID = RefundSucceeded, res.ProviderRefundID
+	if err := s.repo.MarkRefundSucceeded(ctx, rf.ID, res.ProviderRefundID, at); err != nil {
+		return err
+	}
+	return s.post(ctx, ledgerTransaction{
+		Kind:           "refund_paid",
+		OrderID:        rf.OrderID,
+		IdempotencyKey: "refund_paid:" + rf.ID.String(),
+		Entries: []entry{
+			{Account: account{Kind: accountBuyerRefundable, UserID: &buyerID}, Direction: debit, Amount: rf.Amount},
+			{Account: account{Kind: accountGatewayClearing}, Direction: credit, Amount: rf.Amount},
+		},
+	})
+}
+
+func (s *service) CancelPaid(ctx context.Context, jastiperID, orderID uuid.UUID, note string) (Refund, error) {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return Refund{}, &InputError{Detail: "Reason must not be blank."}
+	}
+	return s.Refund(ctx, order.Actor{ID: jastiperID, Type: order.ActorJastiper}, orderID, RefundJastiperCancelled, note)
+}
+
+func actorID(a order.Actor) *uuid.UUID {
+	if a.Type == order.ActorSystem {
+		return nil
+	}
+	return &a.ID
 }
 
 func (s *service) JastiperBalance(ctx context.Context, jastiperID uuid.UUID) (int64, error) {

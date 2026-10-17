@@ -48,6 +48,17 @@ func (h *Handler) RegisterRoutes(api huma.API) {
 	}
 
 	huma.Register(api, huma.Operation{
+		OperationID: "cancelPaidOrder",
+		Method:      http.MethodPost,
+		Path:        "/orders/{id}/cancel-paid",
+		Summary:     "Cancel a paid order and refund the buyer",
+		Tags:        []string{tag},
+		Security:    auth.Security(auth.RoleJastiper),
+		Errors: []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict,
+			http.StatusUnprocessableEntity},
+	}, h.cancelPaid)
+
+	huma.Register(api, huma.Operation{
 		OperationID: "getWallet",
 		Method:      http.MethodGet,
 		Path:        "/wallet",
@@ -74,6 +85,15 @@ type paymentOutput struct {
 	Body paymentResponse
 }
 
+type refundResponse struct {
+	ID          uuid.UUID  `json:"id"`
+	OrderID     uuid.UUID  `json:"orderId"`
+	Amount      int64      `json:"amount"`
+	Reason      string     `json:"reason" enum:"jastiper_cancelled,dispute_refund"`
+	Status      string     `json:"status" enum:"pending,succeeded,failed"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
 type walletResponse struct {
 	Balance int64 `json:"balance" doc:"Whole rupiah"`
 }
@@ -90,6 +110,35 @@ func (h *Handler) simulatePaid(ctx context.Context, in *struct {
 }) (*paymentOutput, error) {
 	p, _ := auth.PrincipalFrom(ctx)
 	return result(h.svc.SimulatePaid(ctx, p.UserID, in.ID))
+}
+
+func (h *Handler) cancelPaid(ctx context.Context, in *struct {
+	ID   uuid.UUID `path:"id"`
+	Body struct {
+		Reason string `json:"reason" minLength:"1" maxLength:"500"`
+	}
+}) (*struct{ Body refundResponse }, error) {
+	p, _ := auth.PrincipalFrom(ctx)
+	rf, err := h.svc.CancelPaid(ctx, p.UserID, in.ID, in.Body.Reason)
+	var inputErr *InputError
+	switch {
+	case errors.As(err, &inputErr):
+		return nil, huma.Error422UnprocessableEntity(inputErr.Detail)
+	case errors.Is(err, order.ErrNotFound):
+		return nil, huma.Error404NotFound("Order not found.")
+	case errors.Is(err, order.ErrInvalidTransition):
+		return nil, huma.Error409Conflict("Only a paid order can be cancelled with a refund.")
+	case err != nil:
+		return nil, err
+	}
+	return &struct{ Body refundResponse }{Body: refundResponse{
+		ID:          rf.ID,
+		OrderID:     rf.OrderID,
+		Amount:      rf.Amount,
+		Reason:      string(rf.Reason),
+		Status:      string(rf.Status),
+		CompletedAt: rf.CompletedAt,
+	}}, nil
 }
 
 func (h *Handler) wallet(ctx context.Context, _ *struct{}) (*struct{ Body walletResponse }, error) {

@@ -36,6 +36,31 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) er
 	return err
 }
 
+const getPaidPaymentByOrder = `-- name: GetPaidPaymentByOrder :one
+SELECT id, order_id, amount, provider, provider_transaction_id, status, checkout_token, checkout_url, expires_at, paid_at, created_at, updated_at FROM payments
+WHERE order_id = $1 AND status = 'paid'
+`
+
+func (q *Queries) GetPaidPaymentByOrder(ctx context.Context, orderID uuid.UUID) (Payment, error) {
+	row := q.db.QueryRow(ctx, getPaidPaymentByOrder, orderID)
+	var i Payment
+	err := row.Scan(
+		&i.ID,
+		&i.OrderID,
+		&i.Amount,
+		&i.Provider,
+		&i.ProviderTransactionID,
+		&i.Status,
+		&i.CheckoutToken,
+		&i.CheckoutUrl,
+		&i.ExpiresAt,
+		&i.PaidAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getPendingPaymentByOrder = `-- name: GetPendingPaymentByOrder :one
 SELECT id, order_id, amount, provider, provider_transaction_id, status, checkout_token, checkout_url, expires_at, paid_at, created_at, updated_at FROM payments
 WHERE order_id = $1 AND status = 'pending'

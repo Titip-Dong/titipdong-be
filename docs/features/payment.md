@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------------- |
 | Package | `internal/payment`                                                                 |
 | Tag     | `payment`                                                                          |
-| Status  | Partial: checkout, settlement, ledger, release, wallet balance done; refunds, payouts, wallet history, auto-release to do |
+| Status  | Partial: checkout, settlement, ledger, release, refunds, wallet balance done; payouts, wallet history, auto-release to do |
 
 ## Overview
 
@@ -24,7 +24,7 @@ call. A Midtrans adapter is out of scope ([PLAN.md](../PLAN.md#7-not-in-scope)).
 type Gateway interface {
     Name() string
     CreateCheckout(ctx context.Context, r CheckoutRequest) (Checkout, error)
-    Refund(ctx context.Context, r RefundRequest) (RefundResult, error)   // to add
+    Refund(ctx context.Context, r RefundRequest) (RefundResult, error)
 }
 ```
 
@@ -175,7 +175,7 @@ users ||--o{ payouts : "requests (jastiper)"
 | `ledger_accounts`     | Done  | Accounts                                                      | `kind` (`gateway_clearing/escrow/jastiper_payable/platform_revenue/buyer_refundable`), `user_id` for per-user kinds |
 | `ledger_transactions` | Done  | One business event                                            | `kind`, `order_id`, `idempotency_key` UNIQUE, `created_by`                      |
 | `ledger_entries`      | Done  | Debit/credit lines                                            | `transaction_id`, `account_id`, `order_id`, `direction`, `amount > 0`           |
-| `refunds`             | To do | Refund of an order to its buyer                               | `order_id`, `payment_id`, `amount`, `reason` (`jastiper_cancelled/dispute_refund`), `status` (`pending/succeeded/failed`) |
+| `refunds`             | Done  | Refund of an order to its buyer                               | `order_id`, `payment_id`, `amount`, `reason` (`jastiper_cancelled/dispute_refund`), `status` (`pending/succeeded/failed`) |
 | `payout_accounts`     | To do | The jastiper's bank account                                   | `user_id` UNIQUE, `bank_name`, `account_number`, `account_name`                 |
 | `payouts`             | To do | Withdrawal request; bank details copied at request time        | `jastiper_id`, `amount`, `status` (`requested/paid/rejected`), `reference`      |
 
@@ -187,7 +187,7 @@ users ||--o{ payouts : "requests (jastiper)"
 | `POST` | `/payments/{id}/simulate`       | `simulatePayment`        | `buyer` (owner)    | Done   | Fake gateway only: settle the payment           |
 | `GET`  | `/wallet`                       | `getWallet`              | `jastiper`         | Done   | Balance; gains `inEscrow` and `pendingPayout`    |
 | `GET`  | `/wallet/transactions`          | `listWalletTransactions` | `jastiper`         | To do  | Ledger entries of the caller's payable account; cursor |
-| `POST` | `/orders/{id}/cancel-paid`      | `cancelPaidOrder`        | `jastiper` (owner) | To do  | Body `{ reason }`: cancel a `paid` order and refund the buyer |
+| `POST` | `/orders/{id}/cancel-paid`      | `cancelPaidOrder`        | `jastiper` (owner) | Done   | Body `{ reason }`: cancel a `paid` order and refund the buyer |
 | `GET`  | `/me/payout-account`            | `getPayoutAccount`       | `jastiper`         | To do  | Saved bank account (404 if none)                |
 | `PUT`  | `/me/payout-account`            | `savePayoutAccount`      | `jastiper`         | To do  | Body `{ bankName, accountNumber, accountName }` |
 | `POST` | `/payouts`                      | `requestPayout`          | `jastiper`         | To do  | Body `{ amount }`                               |
@@ -196,6 +196,18 @@ users ||--o{ payouts : "requests (jastiper)"
 | `POST` | `/admin/payouts/{id}/paid`      | `markPayoutPaid`         | `admin`            | To do  | Body `{ reference }`: bank transfer reference   |
 | `POST` | `/admin/payouts/{id}/reject`    | `rejectPayout`           | `admin`            | To do  | Body `{ reason }`                               |
 
+### `POST /orders/{id}/cancel-paid`
+
+Request `{ "reason": "Tidak jadi berangkat" }` (1–500 chars, becomes the order's `statusReason`). Response 200:
+
+```json
+{ "id": "0192…", "orderId": "0192…", "amount": 1250000, "reason": "jastiper_cancelled", "status": "succeeded",
+  "completedAt": "2026-10-17T09:00:00Z" }
+```
+
+`status` is `failed` when the gateway refuses the refund; the order is still `refunded` and the amount stays in the
+buyer's `buyer_refundable` account. Errors: 404 (not the jastiper's order), 409 (order not `paid`), 422.
+
 Admin payout endpoints live in this package (tag `admin`) because they post to the ledger.
 
 ### Service methods for other modules
@@ -203,7 +215,7 @@ Admin payout endpoints live in this package (tag `admin`) because they post to t
 | Method                                        | Caller                                   | Effect                                                |
 | --------------------------------------------- | ---------------------------------------- | ----------------------------------------------------- |
 | `Release(ctx, orderID)`                       | Shipment, Dispute, auto-release job      | `escrow → jastiper_payable + platform_revenue`, `order.MarkReleased`, notify jastiper |
-| `Refund(ctx, actor, orderID, reason)`         | Dispute, `cancelPaidOrder`               | `refund` posting, `Gateway.Refund`, `refund_paid` posting, `order.MarkRefunded`, `trip.Release` (through order), notify buyer |
+| `Refund(ctx, actor, orderID, reason, note)`   | Dispute, `cancelPaidOrder`               | `refund` posting, `Gateway.Refund`, `refund_paid` posting, `order.MarkRefunded` (`note` = status reason), `trip.Release` (through order), notify, audit `order.refunded` |
 | `Ledger summaries` (`PlatformTotals`, …)      | Admin                                    | Escrow held, platform revenue, payable outstanding     |
 
 ## Sequence diagrams
@@ -370,15 +382,15 @@ Done:
 - [x] `GET /wallet` balance.
 - [x] Notifications `payment.received` (buyer, jastiper) and `order.released` (jastiper share) in the same
       transaction.
+- [x] `Gateway.Refund` (fake succeeds), `refunds` table, `Refund(...)`, `POST /orders/{id}/cancel-paid`, with the
+      `order.refunded` notification and audit row; integration tests for both refund paths and a failing gateway.
 - [x] Integration tests: ledger balance, checkout after the deadline, payment → release.
 
 Remaining:
 
-- [ ] `Gateway.Refund` (fake succeeds), `refunds` table, `Refund(...)`, `POST /orders/{id}/cancel-paid`.
 - [ ] `payout_accounts` and `payouts` tables, payout account and payout endpoints, admin payout endpoints.
 - [ ] `GET /wallet` gains `inEscrow` and `pendingPayout`; `GET /wallet/transactions`.
-- [ ] Notifications `order.refunded`, `payout.paid`, `payout.rejected` (with refunds and payouts) and audit log rows
-      for releases, refunds, and payouts.
+- [ ] Notifications `payout.paid`, `payout.rejected` and audit log rows for releases and payouts.
 - [ ] Job `orders.auto_release`: for `shipped` orders shipped more than 7 days ago, `order.MarkDelivered(system)`
       then `Release`, one transaction per order.
 - [ ] Ledger summaries for F08 stats.

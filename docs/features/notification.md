@@ -35,7 +35,7 @@ notification exists.
 | `payment.received`   | buyer, jastiper    | Payment    | `orderId`, `orderCode`, `amount`                 |
 | `order.shipped`      | buyer              | Shipment   | `orderId`, `orderCode`, `method`, `trackingNumber` |
 | `order.released`     | jastiper           | Payment    | `orderId`, `orderCode`, `amount` (jastiper share) |
-| `order.refunded`     | buyer, jastiper    | Payment    | `orderId`, `orderCode`, `amount`                 |
+| `order.refunded`     | buyer, jastiper (buyer only when the jastiper cancelled) | Payment    | `orderId`, `orderCode`, `amount`                 |
 | `dispute.opened`     | jastiper, admins   | Dispute    | `disputeId`, `orderId`, `orderCode`, `category`  |
 | `dispute.message`    | other participants | Dispute    | `disputeId`, `orderId`, `orderCode`              |
 | `dispute.resolved`   | buyer, jastiper    | Dispute    | `disputeId`, `orderId`, `orderCode`, `decision`  |
@@ -189,8 +189,9 @@ Done:
 - [x] Service and handler tests; integration test that a rolled-back transaction leaves no notification.
 - [x] `Notify` wired into Order (`order.requested`, `order.approved`, `order.rejected`, `order.cancelled` including
       the payment-deadline expiry), Payment (`payment.received`, `order.released`), and Shipment (`order.shipped`).
+- [x] `order.refunded` from Payment refunds.
 
 Remaining:
 
-- [ ] `order.refunded`, `payout.paid`, `payout.rejected`: with F04 refunds and payouts.
+- [ ] `payout.paid`, `payout.rejected`: with F04 payouts.
 - [ ] `dispute.opened`, `dispute.message`, `dispute.resolved`: with F06.

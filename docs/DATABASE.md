@@ -516,7 +516,7 @@ CREATE TABLE payments (
 CREATE UNIQUE INDEX payments_one_active_per_order ON payments (order_id) WHERE status IN ('pending', 'paid');
 ```
 
-### `refunds` (to add)
+### `refunds` (exists)
 
 ```sql
 CREATE TABLE refunds (
