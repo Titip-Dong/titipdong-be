@@ -118,6 +118,19 @@ func (r *fakeRepository) RevokeUserRefreshTokens(_ context.Context, userID uuid.
 	return nil
 }
 
+func (r *fakeRepository) DeleteExpiredRefreshTokens(_ context.Context, before time.Time) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var n int64
+	for h, t := range r.tokens {
+		if t.ExpiresAt.Before(before) {
+			delete(r.tokens, h)
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (r *fakeRepository) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return fn(ctx)
 }

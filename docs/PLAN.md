@@ -21,7 +21,7 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: observability  | Done. JSON logs with request ID, `/metrics`, local Prometheus/Grafana/Loki/Alloy stack              |
 | Platform: runtime        | Done. Readiness probe, graceful shutdown, job runner, OpenAPI export, audit log, blob uploads       |
 | Platform: remaining      | To do. CI checks                                                                                    |
-| F01 Auth & User          | Partial. Register, login, refresh, logout, `GET /me` done; profile, account status, `create-admin` to do |
+| F01 Auth & User          | Done                                                                                               |
 | F02 Trip & Catalog       | Partial. Create, list, get, close, my trips, capacity done; edit, cancel, catalog to do             |
 | F03 Order                | Partial. State machine, request, approve, reject, cancel, notifications, capacity done; photo, per-trip inbox to do |
 | F04 Payment & Escrow     | Partial. Fake gateway checkout, ledger, release, refunds, payouts, wallet balance done; wallet history to do |
@@ -164,7 +164,7 @@ added together with its module.
 | `orders.expire_unpaid`  | 1 min   | `approved` orders past `payment_deadline` → `cancelled` (system), trip capacity released        |
 | `orders.auto_release`   | 5 min   | `shipped` orders whose shipment is older than 7 days → `delivered` (system) → funds released (F05, done) |
 | `trips.close_expired`   | 5 min   | `open` trips past `request_deadline` → `closed`; `closed` trips past `returns_on` with no active orders → `completed` |
-| `auth.purge_tokens`     | 1 hour  | Delete `refresh_tokens` rows past `expires_at`                                                  |
+| `auth.purge_tokens`     | 1 hour  | Delete `refresh_tokens` rows past `expires_at` (done)                                           |
 | `uploads.purge_pending` | 1 hour  | Delete blobs and rows of uploads never attached after 24 hours (done)                           |
 
 The order expiry is also applied when an order is read or acted on, so behaviour does not depend on the loop's

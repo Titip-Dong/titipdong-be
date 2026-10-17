@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------- |
 | Package | `internal/auth`                                                              |
 | Tag     | `auth`                                                                       |
-| Status  | Partial: session and middleware done; profile, account status, `create-admin` to do |
+| Status  | Done                                                                         |
 
 ## Overview
 
@@ -361,7 +361,6 @@ Done:
       tokens).
 - [x] `api create-admin` CLI command.
 - [x] UUIDv7 for new users, refresh tokens, and token families.
+- [x] Job `auth.purge_tokens` (hourly) deleting expired refresh tokens; a token still referenced by an unexpired
+      rotation is kept.
 
-Remaining:
-
-- [ ] Job `auth.purge_tokens` deleting expired refresh tokens.

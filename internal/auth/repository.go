@@ -56,6 +56,7 @@ type repository interface {
 	RevokeRefreshTokenFamily(ctx context.Context, familyID uuid.UUID, at time.Time) error
 	RefreshTokenFamilyActive(ctx context.Context, familyID uuid.UUID) (bool, error)
 	RevokeUserRefreshTokens(ctx context.Context, userID uuid.UUID, at time.Time) error
+	DeleteExpiredRefreshTokens(ctx context.Context, before time.Time) (int64, error)
 }
 
 type pgRepository struct {
@@ -175,6 +176,10 @@ func (r *pgRepository) RefreshTokenFamilyActive(ctx context.Context, familyID uu
 
 func (r *pgRepository) RevokeUserRefreshTokens(ctx context.Context, userID uuid.UUID, at time.Time) error {
 	return r.q(ctx).RevokeUserRefreshTokens(ctx, db.RevokeUserRefreshTokensParams{UserID: userID, RevokedAt: at})
+}
+
+func (r *pgRepository) DeleteExpiredRefreshTokens(ctx context.Context, before time.Time) (int64, error) {
+	return r.q(ctx).DeleteExpiredRefreshTokens(ctx, before)
 }
 
 func toUser(id uuid.UUID, name, email, role, status string, phone *string, createdAt time.Time) User {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -110,6 +111,8 @@ type Service interface {
 	Authenticate(ctx context.Context, accessToken string) (Principal, error)
 	// SetStatus suspends or reactivates a buyer or jastiper; suspending revokes every refresh token.
 	SetStatus(ctx context.Context, userID uuid.UUID, status Status) (User, error)
+	// PurgeExpiredTokens deletes refresh tokens past their expiry; it backs the auth.purge_tokens job.
+	PurgeExpiredTokens(ctx context.Context) error
 }
 
 // NewService returns the PostgreSQL-backed Service.
@@ -320,6 +323,14 @@ func (s *service) SetStatus(ctx context.Context, userID uuid.UUID, status Status
 		return nil
 	})
 	return u, err
+}
+
+func (s *service) PurgeExpiredTokens(ctx context.Context) error {
+	n, err := s.repo.DeleteExpiredRefreshTokens(ctx, s.tokens.now())
+	if err == nil && n > 0 {
+		slog.InfoContext(ctx, "refresh_tokens_purged", "count", n)
+	}
+	return err
 }
 
 func (s *service) Authenticate(_ context.Context, accessToken string) (Principal, error) {
