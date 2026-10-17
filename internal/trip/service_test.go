@@ -82,6 +82,18 @@ func (r *fakeRepository) DeleteItem(_ context.Context, tripID, itemID uuid.UUID)
 	return true, nil
 }
 
+func (r *fakeRepository) CatalogPreviews(ctx context.Context, tripIDs []uuid.UUID, perTrip int) (map[uuid.UUID]CatalogPreview, error) {
+	out := map[uuid.UUID]CatalogPreview{}
+	for _, id := range tripIDs {
+		items, _ := r.Items(ctx, id)
+		if len(items) == 0 {
+			continue
+		}
+		out[id] = CatalogPreview{ItemCount: len(items), Items: items[:min(perTrip, len(items))]}
+	}
+	return out, nil
+}
+
 func (r *fakeRepository) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return fn(ctx)
 }
@@ -643,5 +655,35 @@ func TestCancel(t *testing.T) {
 	}
 	if err := svc.Reserve(ctx, idle.ID, 1); !errors.Is(err, ErrTripClosed) {
 		t.Errorf("Reserve(cancelled) error = %v, want ErrTripClosed", err)
+	}
+}
+
+func TestListIncludesCatalogPreviews(t *testing.T) {
+	svc := newTestService()
+	jastiperID := uuid.New()
+	withItems, _ := svc.Create(t.Context(), jastiperID, validParams())
+	empty, _ := svc.Create(t.Context(), jastiperID, validParams())
+	for i := range 5 {
+		name := fmt.Sprintf("Item %d", i)
+		if _, err := svc.AddItem(t.Context(), jastiperID, withItems.ID, ItemParams{Name: &name}); err != nil {
+			t.Fatalf("AddItem() error = %v", err)
+		}
+	}
+
+	for _, list := range []func() (Page, error){
+		func() (Page, error) { return svc.List(t.Context(), ListParams{Limit: 20}) },
+		func() (Page, error) { return svc.ListByJastiper(t.Context(), jastiperID, 20, "") },
+	} {
+		page, err := list()
+		if err != nil {
+			t.Fatalf("list error = %v", err)
+		}
+		got := page.Previews[withItems.ID]
+		if got.ItemCount != 5 || len(got.Items) != previewPerTrip || got.Items[0].Name != "Item 0" {
+			t.Errorf("preview = %+v, want 5 items counted and the first %d in order", got, previewPerTrip)
+		}
+		if p := page.Previews[empty.ID]; p.ItemCount != 0 || len(p.Items) != 0 {
+			t.Errorf("empty trip preview = %+v, want none", p)
+		}
 	}
 }

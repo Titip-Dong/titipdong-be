@@ -126,9 +126,20 @@ type ListParams struct {
 	Cursor   string
 }
 
+// previewPerTrip is how many catalog items a trip list shows per trip.
+const previewPerTrip = 3
+
+// CatalogPreview is the start of a trip's catalog for the trip lists: the first items and the total count.
+type CatalogPreview struct {
+	ItemCount int
+	Items     []Item
+}
+
 type Page struct {
 	Items      []Trip
 	NextCursor string
+	// Previews holds a CatalogPreview for every trip in Items (empty for a trip without items).
+	Previews map[uuid.UUID]CatalogPreview
 }
 
 type Service interface {
@@ -232,7 +243,7 @@ func (s *service) List(ctx context.Context, p ListParams) (Page, error) {
 	items, next := pagination.Page(trips, p.Limit, func(t Trip) pagination.Cursor {
 		return pagination.Cursor{At: t.DepartsOn, ID: t.ID}
 	})
-	return Page{Items: items, NextCursor: next}, nil
+	return s.withPreviews(ctx, Page{Items: items, NextCursor: next})
 }
 
 func (s *service) ListByJastiper(ctx context.Context, jastiperID uuid.UUID, limit int, cursor string) (Page, error) {
@@ -247,7 +258,20 @@ func (s *service) ListByJastiper(ctx context.Context, jastiperID uuid.UUID, limi
 	items, next := pagination.Page(trips, limit, func(t Trip) pagination.Cursor {
 		return pagination.Cursor{At: t.CreatedAt, ID: t.ID}
 	})
-	return Page{Items: items, NextCursor: next}, nil
+	return s.withPreviews(ctx, Page{Items: items, NextCursor: next})
+}
+
+func (s *service) withPreviews(ctx context.Context, p Page) (Page, error) {
+	ids := make([]uuid.UUID, len(p.Items))
+	for i, t := range p.Items {
+		ids[i] = t.ID
+	}
+	previews, err := s.repo.CatalogPreviews(ctx, ids, previewPerTrip)
+	if err != nil {
+		return Page{}, err
+	}
+	p.Previews = previews
+	return p, nil
 }
 
 func (s *service) BySlug(ctx context.Context, slug string) (Trip, error) {

@@ -55,6 +55,8 @@ type repository interface {
 	UpdateItem(ctx context.Context, it Item) error
 	// DeleteItem reports false when the item does not belong to the trip.
 	DeleteItem(ctx context.Context, tripID, itemID uuid.UUID) (bool, error)
+	// CatalogPreviews returns the first perTrip items and the item count of each trip, in one query.
+	CatalogPreviews(ctx context.Context, tripIDs []uuid.UUID, perTrip int) (map[uuid.UUID]CatalogPreview, error)
 }
 
 type pgRepository struct {
@@ -294,4 +296,22 @@ func notFound(err error) error {
 		return ErrNotFound
 	}
 	return err
+}
+
+func (r *pgRepository) CatalogPreviews(ctx context.Context, tripIDs []uuid.UUID, perTrip int) (map[uuid.UUID]CatalogPreview, error) {
+	previews := make(map[uuid.UUID]CatalogPreview, len(tripIDs))
+	if len(tripIDs) == 0 {
+		return previews, nil
+	}
+	rows, err := r.q(ctx).ListTripPreviewItems(ctx, db.ListTripPreviewItemsParams{TripIds: tripIDs, PerTrip: int64(perTrip)})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		p := previews[row.TripID]
+		p.ItemCount = int(row.ItemCount)
+		p.Items = append(p.Items, Item{TripID: row.TripID, Name: row.Name, PhotoKey: deref(row.PhotoKey)})
+		previews[row.TripID] = p
+	}
+	return previews, nil
 }
