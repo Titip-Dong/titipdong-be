@@ -45,6 +45,7 @@ func (r *pgRepository) Create(ctx context.Context, s Shipment) error {
 		TrackingNumber: s.TrackingNumber,
 		HandoverNote:   s.HandoverNote,
 		ShippedAt:      s.ShippedAt,
+		ProofKey:       nonEmpty(s.ProofKey),
 	})
 }
 
@@ -64,6 +65,7 @@ func (r *pgRepository) ByOrder(ctx context.Context, orderID uuid.UUID) (Shipment
 		HandoverNote:   row.HandoverNote,
 		ShippedAt:      row.ShippedAt,
 		DeliveredAt:    row.DeliveredAt,
+		ProofKey:       deref(row.ProofKey),
 	}, nil
 }
 
@@ -73,4 +75,18 @@ func (r *pgRepository) MarkDelivered(ctx context.Context, orderID uuid.UUID, at 
 
 func (r *pgRepository) DueForRelease(ctx context.Context, cutoff time.Time, limit int) ([]uuid.UUID, error) {
 	return r.q(ctx).ListShipmentsDueForRelease(ctx, db.ListShipmentsDueForReleaseParams{Cutoff: cutoff, RowLimit: int32(limit)})
+}
+
+func nonEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

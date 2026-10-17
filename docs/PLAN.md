@@ -25,7 +25,7 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | F02 Trip & Catalog       | Partial. Create, list, get, close, my trips, capacity done; edit, cancel, catalog to do             |
 | F03 Order                | Partial. State machine, request, approve, reject, cancel, notifications, capacity done; photo, per-trip inbox to do |
 | F04 Payment & Escrow     | Partial. Fake gateway checkout, ledger, release, refunds, payouts, wallet balance done; wallet history to do |
-| F05 Shipment             | Partial. Ship, get, confirm receipt, auto-release done; proof photo to do                           |
+| F05 Shipment             | Done                                                                                               |
 | F06 Dispute              | Done                                                                                               |
 | F07 Notification         | Done                                                                                               |
 | F08 Admin                | Done                                                                                               |

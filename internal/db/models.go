@@ -195,6 +195,7 @@ type Shipment struct {
 	DeliveredAt    *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	ProofKey       *string
 }
 
 type Trip struct {

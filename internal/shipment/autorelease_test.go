@@ -45,7 +45,7 @@ func TestAutoRelease(t *testing.T) {
 	notifier := notification.NewService(pool)
 	orders := order.NewService(pool, trips, upload.NewService(pool, nil), notifier)
 	payments := payment.NewService(pool, orders, notifier, payment.FakeGateway{})
-	svc := NewService(pool, orders, payments, notifier)
+	svc := NewService(pool, orders, payments, upload.NewService(pool, nil), notifier)
 
 	tr, err := trips.Create(ctx, jastiper, trip.CreateParams{
 		Title: "Jastip Test", DestinationCity: "Tokyo", DestinationCountry: "JP",

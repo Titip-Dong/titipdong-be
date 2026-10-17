@@ -635,7 +635,7 @@ CREATE UNIQUE INDEX payouts_one_open_per_jastiper ON payouts (jastiper_id) WHERE
 
 ## 7. F05 Shipment
 
-### `shipments` (exists, to extend: `proof_key`)
+### `shipments` (exists)
 
 One row per order, created when the jastiper hands the item over.
 

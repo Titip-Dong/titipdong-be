@@ -4,7 +4,7 @@
 | ------- | ------------------------------------------------------------- |
 | Package | `internal/shipment`                                           |
 | Tag     | `shipment`                                                    |
-| Status  | Partial: ship, get, confirm receipt, notifications, auto-release done; proof photo to do |
+| Status  | Done                                                          |
 
 ## Overview
 
@@ -83,7 +83,7 @@ shipments }o..o| uploads : "proof_key = object_key"
 | `courier_code`    | `TEXT`        | e.g. `jne`, `jnt`, `sicepat`           |
 | `tracking_number` | `TEXT`        | Required for `courier`                 |
 | `handover_note`   | `TEXT`        | ≤ 1000                                 |
-| `proof_key`       | `TEXT`        | Blob key, nullable (to add)            |
+| `proof_key`       | `TEXT`        | Blob key, nullable                     |
 | `shipped_at`      | `TIMESTAMPTZ` | Starts the 7-day auto-release window   |
 | `delivered_at`    | `TIMESTAMPTZ` |                                        |
 | `created_at`, `updated_at` | `TIMESTAMPTZ` |                               |
@@ -99,7 +99,8 @@ Index `shipments_auto_release_idx (shipped_at) WHERE delivered_at IS NULL` for t
 | `POST` | `/orders/{id}/confirm-receipt` | `confirmReceipt`   | `buyer` (owner)             | Done   | `MarkDelivered` → `payment.Release`                 |
 
 The shipment response carries `autoReleaseAt` (`shipped_at + 7 days`) while the order is `shipped`, omitted
-otherwise. To do: `shipOrder` gains an optional `proofUploadId` and the response a signed `proofUrl`.
+otherwise. `shipOrder` takes an optional `proofUploadId` (purpose `shipment_proof`, owned by the jastiper, attached
+in the ship transaction) and the response carries a signed `proofUrl`, omitted without a proof.
 
 ## Sequence diagrams
 
@@ -181,8 +182,8 @@ Done:
 - [x] `PUT /orders/{id}/shipment`, `GET /orders/{id}/shipment`, `POST /orders/{id}/confirm-receipt` (one
       transaction with the release).
 - [x] `order.shipped` notification in the ship transaction.
+- [x] `proof_key` column, `proofUploadId` on ship, `proofUrl` in the response.
 - [x] `autoReleaseAt` in the response, the `shipped_at` index, and the `orders.auto_release` job.
 
 Remaining:
 
-- [ ] `proof_key` column, `proofUploadId` on ship, `proofUrl` in the response.
