@@ -22,6 +22,38 @@ type AuditLog struct {
 	CreatedAt  time.Time
 }
 
+type Dispute struct {
+	ID           uuid.UUID
+	OrderID      uuid.UUID
+	OpenedBy     uuid.UUID
+	Category     string
+	Description  string
+	Status       string
+	Decision     *string
+	DecisionNote *string
+	DecidedBy    *uuid.UUID
+	DecidedAt    *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type DisputeEvidence struct {
+	ID         uuid.UUID
+	DisputeID  uuid.UUID
+	UploadedBy uuid.UUID
+	FileKey    string
+	Note       *string
+	CreatedAt  time.Time
+}
+
+type DisputeMessage struct {
+	ID        int64
+	DisputeID uuid.UUID
+	AuthorID  uuid.UUID
+	Body      string
+	CreatedAt time.Time
+}
+
 type LedgerAccount struct {
 	ID        uuid.UUID
 	Kind      string

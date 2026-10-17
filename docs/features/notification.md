@@ -4,7 +4,7 @@
 | ------- | ----------------------- |
 | Package | `internal/notification` |
 | Tag     | `notification`          |
-| Status  | Partial: endpoints done; order, payment, shipment events wired; refund, dispute, payout events wait on those features |
+| Status  | Done                    |
 
 ## Overview
 
@@ -191,6 +191,4 @@ Done:
       the payment-deadline expiry), Payment (`payment.received`, `order.released`), and Shipment (`order.shipped`).
 - [x] `order.refunded` from Payment refunds; `payout.paid`, `payout.rejected` from Payment payouts.
 
-Remaining:
-
-- [ ] `dispute.opened`, `dispute.message`, `dispute.resolved`: with F06.
+- [x] `dispute.opened`, `dispute.message`, `dispute.resolved` from Dispute.

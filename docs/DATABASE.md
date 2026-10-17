@@ -656,7 +656,7 @@ CREATE TABLE shipments (
 CREATE INDEX shipments_auto_release_idx ON shipments (shipped_at) WHERE delivered_at IS NULL;
 ```
 
-## 8. F06 Dispute (to add)
+## 8. F06 Dispute (exists)
 
 ```sql
 CREATE TABLE disputes (

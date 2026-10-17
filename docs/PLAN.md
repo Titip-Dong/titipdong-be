@@ -26,8 +26,8 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | F03 Order                | Partial. State machine, request, approve, reject, cancel, notifications, capacity done; photo, per-trip inbox to do |
 | F04 Payment & Escrow     | Partial. Fake gateway checkout, ledger, release, refunds, payouts, wallet balance done; wallet history, auto-release to do |
 | F05 Shipment             | Partial. Ship, get, confirm receipt done; proof photo to do                                         |
-| F06 Dispute              | To do                                                                                              |
-| F07 Notification         | Partial. Endpoints, `Notify`, order/payment/payout events done; dispute events to do |
+| F06 Dispute              | Done                                                                                               |
+| F07 Notification         | Done                                                                                               |
 | F08 Admin                | To do                                                                                              |
 
 ## 2. Scope decisions
