@@ -70,6 +70,7 @@ type shipmentResponse struct {
 	HandoverNote   string     `json:"handoverNote"`
 	ShippedAt      time.Time  `json:"shippedAt"`
 	DeliveredAt    *time.Time `json:"deliveredAt,omitempty"`
+	AutoReleaseAt  *time.Time `json:"autoReleaseAt,omitempty" doc:"While shipped: when funds release unless the buyer confirms or disputes"`
 }
 
 type shipmentOutput struct {
@@ -126,5 +127,6 @@ func result(s Shipment, err error) (*shipmentOutput, error) {
 		HandoverNote:   s.HandoverNote,
 		ShippedAt:      s.ShippedAt,
 		DeliveredAt:    s.DeliveredAt,
+		AutoReleaseAt:  s.AutoReleaseAt,
 	}}, nil
 }

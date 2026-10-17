@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------------------- |
 | Package | `internal/payment`                                                                 |
 | Tag     | `payment`                                                                          |
-| Status  | Partial: checkout, settlement, ledger, release, refunds, payouts, wallet balance done; wallet history, auto-release to do |
+| Status  | Partial: checkout, settlement, ledger, release, refunds, payouts, wallet balance done; wallet history to do |
 
 ## Overview
 
@@ -40,7 +40,7 @@ type Gateway interface {
 - `ledger_transactions.idempotency_key` (e.g. `release:<order_id>`) prevents posting twice on retry.
 - Platform fee = `floor(total × 5 / 100)`; the remainder goes to the jastiper, so no rupiah is lost.
 - **Release** happens when the order becomes `delivered`: buyer confirmation, an admin's release decision, or the
-  `orders.auto_release` job 7 days after shipping.
+  `orders.auto_release` job (F05 Shipment) 7 days after shipping.
 - **Refund** (whole order total) happens when the jastiper cancels a `paid` order, or an admin decides a dispute as
   `refund`. Capacity is released on the trip.
 - **Payouts**: a jastiper with a saved payout account requests an amount up to their available balance
@@ -411,7 +411,5 @@ Remaining:
 
 - [ ] `GET /wallet` gains `inEscrow` and `pendingPayout`; `GET /wallet/transactions`.
 - [ ] Audit log rows for releases.
-- [ ] Job `orders.auto_release`: for `shipped` orders shipped more than 7 days ago, `order.MarkDelivered(system)`
-      then `Release`, one transaction per order.
 - [ ] Ledger summaries for F08 stats.
 - [ ] Integration test: concurrent release and refund on one order (refund and payout postings are covered).

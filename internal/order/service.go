@@ -131,6 +131,7 @@ var transitions = []transition{
 	{StatusPaid, StatusShipped, ActorJastiper},
 	{StatusPaid, StatusRefunded, ActorJastiper},
 	{StatusShipped, StatusDelivered, ActorBuyer},
+	{StatusShipped, StatusDelivered, ActorSystem},
 	{StatusShipped, StatusDisputed, ActorBuyer},
 	{StatusDisputed, StatusDelivered, ActorAdmin},
 	{StatusDisputed, StatusRefunded, ActorAdmin},

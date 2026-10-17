@@ -462,3 +462,33 @@ func TestCapacityIsReservedAndReleased(t *testing.T) {
 		t.Errorf("reserved after refund = %d, want 0", got)
 	}
 }
+
+func TestSystemDeliversOnlyShippedOrders(t *testing.T) {
+	svc := newTestService(newClock())
+	ctx := t.Context()
+	o := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, o.ID, 10_000, 0)
+	_, _ = svc.MarkPaid(ctx, o.ID)
+
+	if _, err := svc.MarkDelivered(ctx, System, o.ID); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("MarkDelivered(system, paid) error = %v, want ErrInvalidTransition", err)
+	}
+	_, _ = svc.MarkShipped(ctx, jastiperID, o.ID)
+	got, err := svc.MarkDelivered(ctx, System, o.ID)
+	if err != nil || got.Status != StatusDelivered {
+		t.Fatalf("MarkDelivered(system, shipped) = %s, %v", got.Status, err)
+	}
+	_, events, _ := svc.Get(ctx, Actor{ID: buyerID, Type: ActorBuyer}, o.ID)
+	if last := events[len(events)-1]; last.ActorType != ActorSystem || last.ActorID != nil {
+		t.Errorf("last event = %+v, want a system event without actor ID", last)
+	}
+
+	disputed := createOrder(t, svc)
+	_, _ = svc.Approve(ctx, jastiperID, disputed.ID, 10_000, 0)
+	_, _ = svc.MarkPaid(ctx, disputed.ID)
+	_, _ = svc.MarkShipped(ctx, jastiperID, disputed.ID)
+	_, _ = svc.MarkDisputed(ctx, buyerID, disputed.ID, "Rusak")
+	if _, err := svc.MarkDelivered(ctx, System, disputed.ID); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("MarkDelivered(system, disputed) error = %v, want ErrInvalidTransition", err)
+	}
+}
