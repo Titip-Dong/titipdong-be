@@ -243,7 +243,7 @@ alt already paid
     pay --> fe      : 200 (no-op)
 else pending
     pay -> db       : UPDATE payments SET status = paid
-    pay -> db       : Ledger payment_received:<payment_id>\n(debit gateway_clearing, credit escrow)
+    pay -> db       : Ledger payment:<payment_id>\n(debit gateway_clearing, credit escrow)
     pay -> order    : MarkPaid(orderID)
     order -> db     : status = paid, order_events
     pay -> notif    : Notify(buyer + jastiper, payment.received)
