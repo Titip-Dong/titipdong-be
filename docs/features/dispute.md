@@ -4,7 +4,7 @@
 | ------- | ------------------ |
 | Package | `internal/dispute` |
 | Tag     | `dispute`          |
-| Status  | To do              |
+| Status  | Partial            |
 
 ## Overview
 
@@ -220,7 +220,12 @@ end
 
 ## Remaining work
 
-- [ ] Migration `create_disputes` (`disputes`, `dispute_evidence`, `dispute_messages`) and queries.
+Done:
+
+- [x] Migration `create_disputes` (`disputes`, `dispute_evidence`, `dispute_messages`) and queries.
+
+Remaining:
+
 - [ ] `openDispute` and `getOrderDispute`; depends on `order.MarkDisputed`.
 - [ ] Evidence through `platform/blob` uploads; `addDisputeEvidence`.
 - [ ] `postDisputeMessage`.
