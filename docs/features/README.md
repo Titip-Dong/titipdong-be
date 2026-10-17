@@ -7,7 +7,7 @@ source of truth, and its file is kept in sync with them.
 | ID  | Module                              | Package                 | Status                                                                 |
 | --- | ----------------------------------- | ----------------------- | ---------------------------------------------------------------------- |
 | F01 | [Auth & User](auth.md)              | `internal/auth`         | Partial: session done; profile, account status, `create-admin` to do   |
-| F02 | [Trip & Catalog](trip.md)           | `internal/trip`         | Partial: core done; capacity, edit, cancel, catalog to do              |
+| F02 | [Trip & Catalog](trip.md)           | `internal/trip`         | Partial: core and capacity done; edit, cancel, catalog to do          |
 | F03 | [Order](order.md)                   | `internal/order`        | Partial: state machine, notifications done; capacity, photo to do      |
 | F04 | [Payment & Escrow](payment.md)      | `internal/payment`      | Partial: checkout, ledger, release done; refunds, payouts to do        |
 | F05 | [Shipment](shipment.md)             | `internal/shipment`     | Partial: ship and confirm done; proof photo to do                      |

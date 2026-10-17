@@ -159,8 +159,8 @@ var (
 func newTestService(c *clock) *service {
 	deadline := c.t.Add(7 * 24 * time.Hour)
 	trips := fakeTrips{trips: map[string]trip.Trip{
-		"tokyo":  {ID: uuid.New(), JastiperID: jastiperID, Slug: "tokyo", Status: trip.StatusOpen, RequestDeadline: deadline},
-		"closed": {ID: uuid.New(), JastiperID: jastiperID, Slug: "closed", Status: trip.StatusClosed, RequestDeadline: deadline},
+		"tokyo":  {ID: uuid.New(), JastiperID: jastiperID, Slug: "tokyo", Status: trip.StatusOpen, RequestDeadline: deadline, Capacity: 10},
+		"closed": {ID: uuid.New(), JastiperID: jastiperID, Slug: "closed", Status: trip.StatusClosed, RequestDeadline: deadline, Capacity: 10},
 	}}
 	return newService(newFakeRepository(c.now), trips, &fakeNotifier{}, c.now)
 }

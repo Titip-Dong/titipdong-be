@@ -61,7 +61,7 @@ func do(t *testing.T, app *fiber.App, method, path, token, body string) (int, ma
 }
 
 const createBody = `{"title":"Jastip Tokyo","destinationCity":"Tokyo","destinationCountry":"JP",
-	"departsOn":"2026-10-10","returnsOn":"2026-10-20","requestDeadline":"2026-10-15T12:00:00Z"}`
+	"departsOn":"2026-10-10","returnsOn":"2026-10-20","requestDeadline":"2026-10-15T12:00:00Z","capacity":10}`
 
 func TestTripFlow(t *testing.T) {
 	app := newTestApp(t)
@@ -72,7 +72,7 @@ func TestTripFlow(t *testing.T) {
 	}
 	slug, _ := body["slug"].(string)
 	id, _ := body["id"].(string)
-	if body["departsOn"] != "2026-10-10" || body["status"] != "open" {
+	if body["departsOn"] != "2026-10-10" || body["status"] != "open" || body["capacity"] != float64(10) || body["remainingCapacity"] != float64(10) {
 		t.Errorf("create body = %v", body)
 	}
 
@@ -108,6 +108,8 @@ func TestTripErrors(t *testing.T) {
 	}{
 		{"create without token", http.MethodPost, "/trips", "", createBody, http.StatusUnauthorized},
 		{"create as buyer", http.MethodPost, "/trips", "buyer", createBody, http.StatusForbidden},
+		{"no capacity", http.MethodPost, "/trips", "jastiper", strings.Replace(createBody, `,"capacity":10`, "", 1), http.StatusUnprocessableEntity},
+		{"capacity too high", http.MethodPost, "/trips", "jastiper", strings.Replace(createBody, `"capacity":10`, `"capacity":1001`, 1), http.StatusUnprocessableEntity},
 		{"bad date", http.MethodPost, "/trips", "jastiper", strings.Replace(createBody, "2026-10-10", "10/10/2026", 1), http.StatusUnprocessableEntity},
 		{"unknown slug", http.MethodGet, "/trips/nope", "", "", http.StatusNotFound},
 		{"bad cursor", http.MethodGet, "/trips?cursor=garbage", "", "", http.StatusUnprocessableEntity},

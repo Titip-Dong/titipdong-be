@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -24,9 +25,11 @@ const (
 )
 
 var (
-	ErrNotFound  = errors.New("trip not found")
-	ErrNotOpen   = errors.New("trip is not open")
-	ErrSlugTaken = errors.New("trip slug taken")
+	ErrNotFound     = errors.New("trip not found")
+	ErrNotOpen      = errors.New("trip is not open")
+	ErrSlugTaken    = errors.New("trip slug taken")
+	ErrTripClosed   = errors.New("trip does not accept requests")
+	ErrCapacityFull = errors.New("trip capacity is full")
 )
 
 type InputError struct {
@@ -49,12 +52,18 @@ type Trip struct {
 	DepartsOn          time.Time
 	ReturnsOn          time.Time
 	RequestDeadline    time.Time
+	Capacity           int
+	ReservedCapacity   int
 	Status             Status
 	CreatedAt          time.Time
 }
 
+func (t Trip) RemainingCapacity() int {
+	return t.Capacity - t.ReservedCapacity
+}
+
 func (t Trip) AcceptsRequests(now time.Time) bool {
-	return t.Status == StatusOpen && now.Before(t.RequestDeadline)
+	return t.Status == StatusOpen && now.Before(t.RequestDeadline) && t.RemainingCapacity() > 0
 }
 
 type CreateParams struct {
@@ -65,6 +74,7 @@ type CreateParams struct {
 	DepartsOn          time.Time
 	ReturnsOn          time.Time
 	RequestDeadline    time.Time
+	Capacity           int
 }
 
 type ListParams struct {
@@ -85,6 +95,11 @@ type Service interface {
 	BySlug(ctx context.Context, slug string) (Trip, error)
 	ByID(ctx context.Context, id uuid.UUID) (Trip, error)
 	Close(ctx context.Context, jastiperID, id uuid.UUID) (Trip, error)
+	// Reserve takes units of capacity under a row lock: ErrTripClosed unless the trip accepts requests,
+	// ErrCapacityFull when fewer units remain.
+	Reserve(ctx context.Context, tripID uuid.UUID, units int) error
+	// Release gives units of capacity back.
+	Release(ctx context.Context, tripID uuid.UUID, units int) error
 }
 
 func NewService(pool *pgxpool.Pool) Service {
@@ -111,6 +126,7 @@ func (s *service) Create(ctx context.Context, jastiperID uuid.UUID, p CreatePara
 		DepartsOn:          p.DepartsOn,
 		ReturnsOn:          p.ReturnsOn,
 		RequestDeadline:    p.RequestDeadline,
+		Capacity:           p.Capacity,
 		Status:             StatusOpen,
 	}
 	switch {
@@ -124,6 +140,8 @@ func (s *service) Create(ctx context.Context, jastiperID uuid.UUID, p CreatePara
 		return Trip{}, &InputError{Detail: "Request deadline must be in the future."}
 	case !t.RequestDeadline.Before(t.ReturnsOn.AddDate(0, 0, 1)):
 		return Trip{}, &InputError{Detail: "Request deadline must not be after the return date."}
+	case t.Capacity < 1:
+		return Trip{}, &InputError{Detail: "Capacity must be at least 1."}
 	}
 
 	for range 3 {
@@ -200,6 +218,41 @@ func (s *service) Close(ctx context.Context, jastiperID, id uuid.UUID) (Trip, er
 	}
 	t.Status = StatusClosed
 	return t, nil
+}
+
+func (s *service) Reserve(ctx context.Context, tripID uuid.UUID, units int) error {
+	if units < 1 {
+		return fmt.Errorf("reserve %d units: must be positive", units)
+	}
+	return s.repo.WithTx(ctx, func(ctx context.Context) error {
+		t, err := s.repo.Lock(ctx, tripID)
+		if err != nil {
+			return err
+		}
+		if t.Status != StatusOpen || !s.now().Before(t.RequestDeadline) {
+			return ErrTripClosed
+		}
+		if t.RemainingCapacity() < units {
+			return ErrCapacityFull
+		}
+		return s.repo.AdjustReserved(ctx, tripID, units)
+	})
+}
+
+func (s *service) Release(ctx context.Context, tripID uuid.UUID, units int) error {
+	if units < 1 {
+		return fmt.Errorf("release %d units: must be positive", units)
+	}
+	return s.repo.WithTx(ctx, func(ctx context.Context) error {
+		t, err := s.repo.Lock(ctx, tripID)
+		if err != nil {
+			return err
+		}
+		if t.ReservedCapacity < units {
+			return fmt.Errorf("release %d units: only %d reserved on trip %s", units, t.ReservedCapacity, tripID)
+		}
+		return s.repo.AdjustReserved(ctx, tripID, -units)
+	})
 }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)

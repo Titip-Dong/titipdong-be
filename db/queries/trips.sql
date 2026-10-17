@@ -1,8 +1,8 @@
 -- name: CreateTrip :exec
 INSERT INTO trips (
     id, jastiper_id, slug, title, description, destination_city, destination_country,
-    departs_on, returns_on, request_deadline
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
+    departs_on, returns_on, request_deadline, capacity
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- name: GetTripByID :one
 SELECT sqlc.embed(t), u.name AS jastiper_name
@@ -22,6 +22,7 @@ FROM trips t
 JOIN users u ON u.id = t.jastiper_id
 WHERE t.status = 'open'
   AND t.request_deadline > sqlc.arg(now)::timestamptz
+  AND t.reserved_capacity < t.capacity
   AND t.destination_city ILIKE sqlc.arg(city)::text || '%'
   AND (t.departs_on, t.id) > (sqlc.arg(after_departs_on)::date, sqlc.arg(after_id)::uuid)
 ORDER BY t.departs_on, t.id
@@ -40,3 +41,15 @@ LIMIT sqlc.arg(row_limit);
 UPDATE trips
 SET status = 'closed', updated_at = now()
 WHERE id = $1 AND status = 'open';
+
+-- name: LockTrip :one
+SELECT sqlc.embed(t), u.name AS jastiper_name
+FROM trips t
+JOIN users u ON u.id = t.jastiper_id
+WHERE t.id = $1
+FOR UPDATE OF t;
+
+-- name: AdjustTripReservedCapacity :exec
+UPDATE trips
+SET reserved_capacity = reserved_capacity + sqlc.arg(units)::integer, updated_at = now()
+WHERE id = sqlc.arg(id);

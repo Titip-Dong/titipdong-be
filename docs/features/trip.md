@@ -4,7 +4,7 @@
 | ------- | ---------------------------------------------------------------------- |
 | Package | `internal/trip`                                                        |
 | Tag     | `trip`                                                                 |
-| Status  | Partial: create, list, get, close, my trips done; capacity, edit, cancel, catalog to do |
+| Status  | Partial: create, list, get, close, my trips, capacity done; edit, cancel, catalog to do |
 
 ## Overview
 
@@ -142,8 +142,10 @@ DESC, id DESC)`.
 | `PATCH`  | `/trips/{id}/items/{itemId}`    | `updateTripItem`  | `jastiper` (owner) | To do  | Edit a catalog item                            |
 | `DELETE` | `/trips/{id}/items/{itemId}`    | `deleteTripItem`  | `jastiper` (owner) | To do  | Remove a catalog item                          |
 
-Trip responses gain `capacity` and `remainingCapacity`; `getTrip` also embeds the catalog (`items`, each with a
-signed `photoUrl`). `listTrips` gains `from` / `to` filters on `departsOn`.
+`createTrip` takes `capacity` (required, 1–1000 items). Trip responses carry `capacity` and `remainingCapacity`
+(`capacity - reserved_capacity`); `acceptsRequests` is false when no capacity remains, and `listTrips` leaves full
+trips out. To do: `getTrip` embeds the catalog (`items`, each with a signed `photoUrl`); `listTrips` gains `from` /
+`to` filters on `departsOn`.
 
 Lists use cursor pagination (`?limit=` default 20, max 100; `?cursor=`), responses `{ items, nextCursor }`.
 
@@ -153,7 +155,7 @@ Lists use cursor pagination (`?limit=` default 20, max 100; `?cursor=`), respons
 | ---------------------------------------------- | ------ | -------------------------------------------------------- |
 | `BySlug(ctx, slug)`, `ByID(ctx, id)`           | Order  | Read jastiper ID, status, deadline                       |
 | `Reserve(ctx, tripID, units) error`            | Order  | Lock trip; `ErrTripClosed` unless accepting; `ErrCapacityFull` if not enough room; add units |
-| `Release(ctx, tripID, units) error`            | Order  | Lock trip, subtract units (reject, cancel, refund)        |
+| `Release(ctx, tripID, units) error`            | Order  | Lock trip, subtract units (reject, cancel, expiry, refund); error if more than reserved |
 
 ## Sequence diagrams
 
@@ -251,11 +253,11 @@ Done:
 - [x] Slug generation, `ByID` / `BySlug`, `Trip.AcceptsRequests(now)`.
 - [x] Service and handler tests.
 - [x] Migration adding `capacity` / `reserved_capacity`, backfilling `reserved_capacity` from existing active orders.
+- [x] `capacity` in create and responses, `remainingCapacity`; `Reserve` / `Release` under a row lock; integration
+      test for concurrent `Reserve`.
 
 Remaining:
 
-- [ ] `capacity` in create and responses, `remainingCapacity`; `Reserve` / `Release` under a row lock; integration
-      test for concurrent `Reserve`.
 - [ ] `from` / `to` filters on `listTrips`.
 - [ ] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.
 - [ ] `trip_items` table and catalog CRUD with photos (`platform/blob`).

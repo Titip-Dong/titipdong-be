@@ -76,6 +76,7 @@ func (f fixture) approvedOrder(t *testing.T, quantity int, itemPrice, fee int64)
 		DepartsOn:          time.Now().AddDate(0, 0, 1),
 		ReturnsOn:          time.Now().AddDate(0, 0, 10),
 		RequestDeadline:    time.Now().Add(72 * time.Hour),
+		Capacity:           10,
 	})
 	if err != nil {
 		t.Fatal(err)
