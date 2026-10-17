@@ -23,7 +23,7 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: remaining      | To do. CI checks                                                                                    |
 | F01 Auth & User          | Done                                                                                               |
 | F02 Trip & Catalog       | Partial. Create, list, get, close, my trips, capacity, catalog done; edit, cancel, date filters to do |
-| F03 Order                | Partial. State machine, request, approve, reject, cancel, notifications, capacity done; photo, per-trip inbox to do |
+| F03 Order                | Partial. All endpoints, notifications, capacity, photo, per-trip inbox, expiry job done; concurrency test to do |
 | F04 Payment & Escrow     | Partial. Fake gateway checkout, ledger, release, refunds, payouts, wallet balance done; wallet history to do |
 | F05 Shipment             | Done                                                                                               |
 | F06 Dispute              | Done                                                                                               |
