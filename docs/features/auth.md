@@ -360,8 +360,8 @@ Done:
 - [x] `PATCH /me` (name, phone, password change with the current password; a password change revokes all refresh
       tokens).
 - [x] `api create-admin` CLI command.
+- [x] UUIDv7 for new users, refresh tokens, and token families.
 
 Remaining:
 
-- [ ] UUIDv7 for new users and refresh tokens (currently v4).
 - [ ] Job `auth.purge_tokens` deleting expired refresh tokens.

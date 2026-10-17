@@ -136,7 +136,7 @@ func (s *service) Register(ctx context.Context, p RegisterParams) (Session, erro
 		if err != nil {
 			return err
 		}
-		sess, _, err = s.session(ctx, u, uuid.New())
+		sess, _, err = s.session(ctx, u, newID())
 		return err
 	})
 	return sess, err
@@ -160,7 +160,7 @@ func (s *service) createUser(ctx context.Context, p RegisterParams) (User, error
 		return User{}, fmt.Errorf("hash password: %w", err)
 	}
 	return s.repo.CreateUser(ctx, newUser{
-		ID:           uuid.New(),
+		ID:           newID(),
 		Name:         name,
 		Email:        normalizeEmail(p.Email),
 		PasswordHash: hash,
@@ -185,7 +185,7 @@ func (s *service) Login(ctx context.Context, email, password string) (Session, e
 	if u.Status == StatusSuspended {
 		return Session{}, ErrSuspended
 	}
-	sess, _, err := s.session(ctx, u, uuid.New())
+	sess, _, err := s.session(ctx, u, newID())
 	return sess, err
 }
 
@@ -333,7 +333,7 @@ func (s *service) session(ctx context.Context, u User, familyID uuid.UUID) (Sess
 	}
 	raw, hash := newRefreshToken()
 	t := refreshToken{
-		ID:        uuid.New(),
+		ID:        newID(),
 		UserID:    u.ID,
 		FamilyID:  familyID,
 		ExpiresAt: s.tokens.now().Add(refreshTokenLifetime),
@@ -346,4 +346,8 @@ func (s *service) session(ctx context.Context, u User, familyID uuid.UUID) (Sess
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func newID() uuid.UUID {
+	return uuid.Must(uuid.NewV7())
 }

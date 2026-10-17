@@ -478,3 +478,18 @@ func TestUpdateProfile(t *testing.T) {
 		t.Errorf("Login(new password) error = %v", err)
 	}
 }
+
+func TestNewIDsAreVersion7(t *testing.T) {
+	repo := newFakeRepository()
+	svc := newService(repo, newTokens([]byte(testSecret), accessTokenLifetime, func() time.Time { return repo.now }))
+	sess, err := svc.Register(t.Context(), RegisterParams{Name: "Budi", Email: "budi@example.com", Password: "rahasia123", Role: RoleBuyer})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := repo.tokens[string(hashRefreshToken(sess.RefreshToken))]
+	for name, id := range map[string]uuid.UUID{"user": sess.User.ID, "token": tok.ID, "family": tok.FamilyID} {
+		if id.Version() != 7 {
+			t.Errorf("%s ID version = %d, want 7", name, id.Version())
+		}
+	}
+}
