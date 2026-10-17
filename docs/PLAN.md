@@ -23,7 +23,7 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | Platform: remaining      | To do. CI checks                                                                                    |
 | F01 Auth & User          | Done                                                                                               |
 | F02 Trip & Catalog       | Done                                                                                               |
-| F03 Order                | Partial. All endpoints, notifications, capacity, photo, per-trip inbox, expiry job done; concurrency test to do |
+| F03 Order                | Done |
 | F04 Payment & Escrow     | Partial. All endpoints done; concurrent release/refund integration test to do                       |
 | F05 Shipment             | Done                                                                                               |
 | F06 Dispute              | Done                                                                                               |
