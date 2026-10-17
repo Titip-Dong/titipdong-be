@@ -138,6 +138,57 @@ func (q *Queries) ListTripItems(ctx context.Context, tripID uuid.UUID) ([]TripIt
 	return items, nil
 }
 
+const listTripPreviewItems = `-- name: ListTripPreviewItems :many
+SELECT trip_id, name, photo_key, item_count::integer AS item_count
+FROM (
+    SELECT ti.trip_id, ti.name, ti.photo_key,
+           row_number() OVER (PARTITION BY ti.trip_id ORDER BY ti.position, ti.created_at, ti.id) AS rn,
+           count(*) OVER (PARTITION BY ti.trip_id) AS item_count
+    FROM trip_items ti
+    WHERE ti.trip_id = ANY($1::uuid[])
+) ranked
+WHERE rn <= $2::bigint
+ORDER BY trip_id, rn
+`
+
+type ListTripPreviewItemsParams struct {
+	TripIds []uuid.UUID
+	PerTrip int64
+}
+
+type ListTripPreviewItemsRow struct {
+	TripID    uuid.UUID
+	Name      string
+	PhotoKey  *string
+	ItemCount int32
+}
+
+// The first items of each trip in display order, with the trip's item count; feeds the trip lists.
+func (q *Queries) ListTripPreviewItems(ctx context.Context, arg ListTripPreviewItemsParams) ([]ListTripPreviewItemsRow, error) {
+	rows, err := q.db.Query(ctx, listTripPreviewItems, arg.TripIds, arg.PerTrip)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTripPreviewItemsRow
+	for rows.Next() {
+		var i ListTripPreviewItemsRow
+		if err := rows.Scan(
+			&i.TripID,
+			&i.Name,
+			&i.PhotoKey,
+			&i.ItemCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateTripItem = `-- name: UpdateTripItem :exec
 UPDATE trip_items
 SET name = $3, description = $4, photo_key = $5, reference_price = $6, position = $7, updated_at = now()

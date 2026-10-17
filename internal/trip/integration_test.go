@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -306,5 +307,64 @@ func TestUpdateAndCancelQueries(t *testing.T) {
 	}
 	if got, _ := svc.ByID(ctx, tr.ID); got.Status != StatusCancelled {
 		t.Errorf("stored status = %s, want cancelled", got.Status)
+	}
+}
+
+func TestCatalogPreviewQuery(t *testing.T) {
+	dbURL := os.Getenv("TEST_DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := database.Connect(ctx, dbURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err := database.Migrate(ctx, pool, migrations.FS); err != nil {
+		t.Fatal(err)
+	}
+	jastiper, err := auth.Provision(ctx, pool, auth.RegisterParams{
+		Name: "Jastiper", Email: uuid.NewString() + "@test.local", Password: "password123", Role: auth.RoleJastiper,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(pool, nil)
+	params := CreateParams{
+		Title: "Jastip Preview", DestinationCity: "Seoul", DestinationCountry: "KR",
+		DepartsOn: time.Now().AddDate(0, 0, 1), ReturnsOn: time.Now().AddDate(0, 0, 10),
+		RequestDeadline: time.Now().Add(72 * time.Hour), Capacity: 5,
+	}
+	withItems, err := svc.Create(ctx, jastiper.ID, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := svc.Create(ctx, jastiper.ID, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Positions out of insertion order: the preview must follow the display order.
+	for i, pos := range []int{3, 0, 2, 1} {
+		name, pos := []string{"D", "A", "C", "B"}[i], pos
+		if _, err := svc.AddItem(ctx, jastiper.ID, withItems.ID, ItemParams{Name: &name, Position: &pos}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := svc.ListByJastiper(ctx, jastiper.ID, 20, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := page.Previews[withItems.ID]
+	names := make([]string, len(got.Items))
+	for i, it := range got.Items {
+		names[i] = it.Name
+	}
+	if got.ItemCount != 4 || strings.Join(names, "") != "ABC" {
+		t.Errorf("preview = %d items %v, want 4 items and A B C", got.ItemCount, names)
+	}
+	if p, ok := page.Previews[empty.ID]; ok {
+		t.Errorf("empty trip preview = %+v, want none", p)
 	}
 }
