@@ -13,7 +13,7 @@ source of truth, and its file is kept in sync with them.
 | F05 | [Shipment](shipment.md)             | `internal/shipment`     | Partial: ship, confirm, auto-release done; proof photo to do           |
 | F06 | [Dispute](dispute.md)               | `internal/dispute`      | Done                                                                   |
 | F07 | [Notification](notification.md)     | `internal/notification` | Done                                                                   |
-| F08 | [Admin](admin.md)                   | `internal/admin`        | To do                                                                  |
+| F08 | [Admin](admin.md)                   | `internal/admin`        | Done                                                                   |
 
 Scope decisions (fake payment gateway, in-process jobs, Azure Blob uploads, in-app notifications only) and what is
 deliberately left out are in [PLAN.md](../PLAN.md#2-scope-decisions).

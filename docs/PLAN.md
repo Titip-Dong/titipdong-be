@@ -28,7 +28,7 @@ Every module and platform item below is in scope; "to do" marks work that is not
 | F05 Shipment             | Partial. Ship, get, confirm receipt, auto-release done; proof photo to do                           |
 | F06 Dispute              | Done                                                                                               |
 | F07 Notification         | Done                                                                                               |
-| F08 Admin                | To do                                                                                              |
+| F08 Admin                | Done                                                                                               |
 
 ## 2. Scope decisions
 
