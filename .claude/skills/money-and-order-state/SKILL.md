@@ -31,7 +31,7 @@ These are the invariants that keep escrow correct. Breaking one is a correctness
 - Double entry: debits = credits, at least two entries (a deferred trigger rejects the commit otherwise).
 - Append-only: corrections are new reversing transactions, never UPDATE/DELETE.
 - Every ledger transaction has a deterministic `idempotency_key`; `Post` is a no-op when the key exists. Keys:
-  `payment_received:<payment_id>`, `release:<order_id>`, `refund:<order_id>`, `refund_paid:<refund_id>`,
+  `payment:<payment_id>`, `release:<order_id>`, `refund:<order_id>`, `refund_paid:<refund_id>`,
   `payout:<payout_id>`.
 - Accounts and postings are exactly the table in `docs/features/payment.md`. Do not invent accounts or kinds; adding
   one needs a migration (CHECK list) and a doc update.

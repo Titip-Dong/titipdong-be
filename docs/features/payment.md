@@ -57,7 +57,7 @@ type Gateway interface {
 | Refund completed at gateway   | `refund_paid`      | `buyer_refundable` 1.000.000 | `gateway_clearing` 1.000.000                            |
 | Payout paid to jastiper       | `payout`           | `jastiper_payable` 950.000   | `gateway_clearing` 950.000                              |
 
-Idempotency keys: `payment_received:<payment_id>`, `release:<order_id>`, `refund:<order_id>`,
+Idempotency keys: `payment:<payment_id>`, `release:<order_id>`, `refund:<order_id>`,
 `refund_paid:<refund_id>`, `payout:<payout_id>`.
 
 ## Database tables
@@ -276,7 +276,7 @@ FE -> H : POST /payments/{id}/simulate
 H -> S : SimulatePaid(buyerID, paymentID)
 S -> DB : BEGIN; lock payment, order
 S -> DB : UPDATE payments SET status = paid, paid_at
-S -> DB : ledger payment_received:<payment_id>
+S -> DB : ledger payment:<payment_id>
 S -> O : MarkPaid(orderID)
 S -> DB : INSERT notifications (buyer, jastiper: payment.received)
 S -> DB : COMMIT
