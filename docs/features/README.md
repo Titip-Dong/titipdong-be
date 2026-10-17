@@ -12,7 +12,7 @@ source of truth, and its file is kept in sync with them.
 | F04 | [Payment & Escrow](payment.md)      | `internal/payment`      | Partial: checkout, ledger, release done; refunds, payouts to do        |
 | F05 | [Shipment](shipment.md)             | `internal/shipment`     | Partial: ship and confirm done; proof photo to do                      |
 | F06 | [Dispute](dispute.md)               | `internal/dispute`      | To do                                                                  |
-| F07 | [Notification](notification.md)     | `internal/notification` | To do                                                                  |
+| F07 | [Notification](notification.md)     | `internal/notification` | Partial: endpoints and `Notify` done; wiring into modules to do        |
 | F08 | [Admin](admin.md)                   | `internal/admin`        | To do                                                                  |
 
 Scope decisions (fake payment gateway, in-process jobs, Azure Blob uploads, in-app notifications only) and what is

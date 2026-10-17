@@ -698,13 +698,13 @@ CREATE INDEX dispute_messages_dispute_idx ON dispute_messages (dispute_id, id);
 
 A partial refund is not modelled: the decision is all-or-nothing, as in the business flow.
 
-## 9. F07 Notification (to add)
+## 9. F07 Notification (exists)
 
 ```sql
 CREATE TABLE notifications (
     id         UUID PRIMARY KEY,
     user_id    UUID NOT NULL REFERENCES users (id),
-    type       TEXT NOT NULL,                          -- e.g. order.approved, payment.received, dispute.resolved
+    type       TEXT NOT NULL CHECK (char_length(type) <= 32), -- e.g. order.approved, payment.received
     data       JSONB NOT NULL DEFAULT '{}',            -- IDs and values for the FE to render; no secrets
     read_at    TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

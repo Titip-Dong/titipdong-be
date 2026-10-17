@@ -48,6 +48,15 @@ type LedgerTransaction struct {
 	CreatedAt      time.Time
 }
 
+type Notification struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	Type      string
+	Data      []byte
+	ReadAt    *time.Time
+	CreatedAt time.Time
+}
+
 type Order struct {
 	ID              uuid.UUID
 	Code            string
