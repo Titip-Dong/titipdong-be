@@ -4,6 +4,7 @@ package monitoring
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -96,8 +97,10 @@ func (m *Metrics) Handler() http.Handler {
 // FiberMiddleware records normalized route-level API traffic metrics.
 func (m *Metrics) FiberMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		method := c.Method()
-		route := routeTemplate(c)
+		// fasthttp may reuse the backing bytes for Method(). Clone strings before
+		// storing them in Prometheus labels, which outlive the current request.
+		method := strings.Clone(c.Method())
+		route := strings.Clone(routeTemplate(c))
 		m.inFlight.WithLabelValues(method, route).Inc()
 		started := time.Now()
 
@@ -114,7 +117,7 @@ func (m *Metrics) FiberMiddleware() fiber.Handler {
 		}
 		// Calling Route after the handler completes gives the normalized template
 		// (for example /orders/:id), not a user-controlled path with an ID.
-		route = routeTemplate(c)
+		route = strings.Clone(routeTemplate(c))
 		statusCode := strconv.Itoa(status)
 		m.requests.WithLabelValues(method, route, statusCode).Inc()
 		m.requestDuration.WithLabelValues(method, route, statusCode).Observe(time.Since(started).Seconds())

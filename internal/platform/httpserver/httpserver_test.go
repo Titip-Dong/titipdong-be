@@ -108,8 +108,10 @@ func TestCORS(t *testing.T) {
 
 func TestMetrics(t *testing.T) {
 	app, _ := New()
-	if _, err := app.Test(httptest.NewRequest(http.MethodGet, "/health", nil)); err != nil {
-		t.Fatalf("request failed: %v", err)
+	for i := 0; i < 10; i++ {
+		if _, err := app.Test(httptest.NewRequest(http.MethodGet, "/health", nil)); err != nil {
+			t.Fatalf("health request %d failed: %v", i+1, err)
+		}
 	}
 
 	res, err := app.Test(httptest.NewRequest(http.MethodGet, "/metrics", nil))
