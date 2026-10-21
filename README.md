@@ -51,7 +51,7 @@ Nothing else needs installing: `make` runs sqlc, goose, and golangci-lint at pin
 
    ```sh
    make db-up      # rebuilds the API image and waits until everything is healthy
-   make seed       # demo accounts
+   make seed       # demo accounts, one Tokyo trip, and three catalog items
    ```
 
 3. The API runs at `http://localhost:8080`; pending migrations are applied on startup. To follow its JSON logs:
@@ -100,8 +100,9 @@ Run `make` to list every command. The common ones:
 - `GET /docs`: interactive API docs.
 - `GET /health`: liveness probe.
 - `GET /health/ready`: readiness probe; 503 while PostgreSQL is unreachable.
-- Demo accounts: `make seed` creates `jastiper@titipdong.test`, `buyer@titipdong.test`, and `admin@titipdong.test`
-  (password `demo12345`).
+- Demo data: `make seed` creates `jastiper@titipdong.test`, `buyer@titipdong.test`, and
+  `admin@titipdong.test` (password `demo12345`), plus a Tokyo trip with three catalog items. It is safe to run more
+  than once; existing demo records are kept.
 - Payments use a fake gateway: after `POST /orders/{id}/payments`, call `POST /payments/{id}/simulate` to pay.
 
 Errors use RFC 9457 `application/problem+json`. Protected endpoints take `Authorization: Bearer <access token>`.

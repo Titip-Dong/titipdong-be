@@ -42,7 +42,7 @@ run: ## Run the API on the host (reads .env, applies migrations on startup)
 	go run ./cmd/api
 
 .PHONY: seed
-seed: ## Create the demo accounts (idempotent)
+seed: ## Create the demo accounts, trip, and catalog (idempotent)
 	go run ./cmd/api seed-demo
 
 .PHONY: openapi
