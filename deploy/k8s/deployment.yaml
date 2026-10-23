@@ -24,15 +24,18 @@ spec:
     spec:
       terminationGracePeriodSeconds: 30
       affinity:
+        # Preferred, not required: spread pods when there are several nodes, but still run both on a single-node cluster.
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app.kubernetes.io/name: titipdong-api
-              topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: titipdong-api
+                topologyKey: kubernetes.io/hostname
       containers:
         - name: api
-          image: titipdongacr2026.azurecr.io/titipdong-api:manual
+          image: titipdongacr20261023.azurecr.io/titipdong-api:manual
           imagePullPolicy: Always
           ports:
             - name: http

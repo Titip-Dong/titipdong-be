@@ -225,12 +225,13 @@ newest one Azurite 3.37 accepts.
 | `main` → check → ACR image → AKS rollout | Done | `.github/workflows/deploy-aks.yml`, image tagged with the commit SHA                    |
 | Check workflow on every non-`main` push | Done | `.github/workflows/check.yml`: `make check`, integration tests with PostgreSQL and Azurite services, OpenAPI artifact; reused by the deploy workflow |
 | Secrets for `DATABASE_URL`, `JWT_SECRET` | Done | Secret `titipdong-api-secrets`, wired with `secretKeyRef`                             |
-| 2 replicas with anti-affinity        | Done  | `deploy/k8s/deployment.yaml`                                                             |
+| 2 replicas, preferred anti-affinity  | Done  | `deploy/k8s/deployment.yaml`; one node for now, so both pods share it                    |
+| HTTPS entry point                    | Done  | Caddy with Let's Encrypt at `titipdong-api.indonesiacentral.cloudapp.azure.com` (`deploy/k8s/caddy.yaml`) |
 | Readiness probe on `/health/ready`, `preStop` | Done | Graceful rollouts without dropped requests                     |
 | Resource requests and limits         | Done  | 100m CPU / 128 Mi requested, 256 Mi memory limit                                         |
 | Runtime env in the Deployment        | Done  | `PAYMENT_GATEWAY=fake`; optional `AZURE_STORAGE_CONNECTION_STRING` (Secret) and `CORS_ORIGINS` (ConfigMap `titipdong-api-config`) |
-| Blob Storage account in Azure        | To do | Create the storage account and add its connection string to the Secret (`deploy/k8s/README.md`) |
-| Frontend origin                      | To do | Set `CORS_ORIGINS` in the ConfigMap once the FE domain exists                            |
+| Blob Storage account in Azure        | Done  | `titipdongst20261023`; connection string in the Secret                                  |
+| Frontend origin                      | Done  | `CORS_ORIGINS=https://titipdongst20261023.z45.web.core.windows.net` (storage static website) |
 | Same-site domains for FE and API     | To do | The `SameSite=Lax` refresh cookie needs both under one parent domain (`deploy/k8s/README.md` §6) |
 | First admin                          | To do | `create-admin` in a pod after the first rollout (`deploy/k8s/README.md` §5)              |
 

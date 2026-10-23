@@ -1,10 +1,10 @@
 # Deploy the API to AKS
 
-This deployment creates two API pods in the `titipdong` namespace and an Azure public LoadBalancer service for prototype monitoring and smoke tests. The active image registry is `titipdongacr2026.azurecr.io`.
+This deployment creates two API pods in the `titipdong` namespace behind an internal Service, and Caddy as the public HTTPS entry point at `https://titipdong-api.indonesiacentral.cloudapp.azure.com`. Everything lives in resource group `rg-titipdong` (Indonesia Central): AKS `aks-titipdong` (one `Standard_B2als_v2` node), registry `titipdongacr20261023.azurecr.io`, PostgreSQL `titipdongpg20261023`, and storage account `titipdongst20261023`.
 
 ## 1. Confirm the image registry
 
-The checked-in Deployment already uses `titipdongacr2026.azurecr.io`. Confirm the login server when deploying from a new terminal:
+The checked-in Deployment already uses `titipdongacr20261023.azurecr.io`. Confirm the login server when deploying from a new terminal:
 
 ```bash
 az acr show \
@@ -16,7 +16,7 @@ az acr show \
 The command should return:
 
 ```text
-titipdongacr2026.azurecr.io
+titipdongacr20261023.azurecr.io
 ```
 
 ## 2. Build and push
@@ -65,7 +65,7 @@ The Deployment reads its configuration from one Secret and one optional ConfigMa
 
 | Source                         | Key                               | Required | Notes                                                       |
 | ------------------------------ | --------------------------------- | -------- | ----------------------------------------------------------- |
-| Secret `titipdong-api-secrets` | `DATABASE_URL`                    | yes      | Azure PostgreSQL, `sslmode=require`                          |
+| Secret `titipdong-api-secrets` | `DATABASE_URL`                    | yes      | Azure PostgreSQL, `sslmode=require&pool_max_conns=10` (see below) |
 | Secret `titipdong-api-secrets` | `JWT_SECRET`                      | yes      | At least 32 characters (`openssl rand -base64 32`)          |
 | Secret `titipdong-api-secrets` | `AZURE_STORAGE_CONNECTION_STRING` | no       | Storage account connection string with an account key; uploads return 503 without it |
 | ConfigMap `titipdong-api-config` | `CORS_ORIGINS`                  | no       | Comma-separated frontend origins; defaults to `http://localhost:5173` |
@@ -87,6 +87,10 @@ kubectl create configmap titipdong-api-config --namespace titipdong \
 
 Changing either one requires `kubectl rollout restart deployment/titipdong-api --namespace titipdong`.
 
+Keep `pool_max_conns=10` in `DATABASE_URL`. Each background job holds one pool connection for its advisory lock while
+its body takes another, and pgx defaults to `max(4, CPUs)` connections: on a 2-vCPU node the four jobs can take all
+four and deadlock the pod (readiness hangs, rollout times out).
+
 ## 4. Deploy and verify
 
 ```bash
@@ -98,16 +102,18 @@ kubectl wait \
 
 kubectl apply -f titipdong-be/deploy/k8s/service.yaml
 kubectl apply -f titipdong-be/deploy/k8s/deployment.yaml
+kubectl apply -f titipdong-be/deploy/k8s/caddy.yaml
 kubectl rollout status deployment/titipdong-api --namespace titipdong
 kubectl get pods --namespace titipdong --output wide
-kubectl get service titipdong-api --namespace titipdong --watch
+kubectl get service caddy --namespace titipdong --watch
 ```
 
-When `EXTERNAL-IP` is assigned, in a second terminal:
+The `caddy` Service's annotation names its public IP `titipdong-api.indonesiacentral.cloudapp.azure.com`; Caddy
+requests a Let's Encrypt certificate on first start and keeps it on the `caddy-data` disk. Then:
 
 ```bash
-curl http://<external-ip>/health
-curl http://<external-ip>/health/ready   # 503 while the database is unreachable
+curl https://titipdong-api.indonesiacentral.cloudapp.azure.com/health
+curl https://titipdong-api.indonesiacentral.cloudapp.azure.com/health/ready   # 503 while the database is unreachable
 ```
 
 Expected response:
@@ -143,8 +149,10 @@ Go runtime metrics. It is not a readiness or liveness endpoint. The local
 Prometheus/Grafana setup and two-pod port-forward procedure are documented in
 `titipdong-docs/MONITORING_RUNBOOK.md`.
 
-The two API pods must be on different nodes. The Deployment uses required pod anti-affinity to enforce that constraint. If either node is unavailable, the second pod remains pending rather than being scheduled alongside the first pod.
+The Deployment prefers to place the two API pods on different nodes (preferred pod anti-affinity), so they spread
+when the cluster has several nodes and still both run on the current single node. It uses `maxSurge: 0` and
+`maxUnavailable: 1` during rolling updates, replacing one pod at a time.
 
-The Deployment uses `maxSurge: 0` and `maxUnavailable: 1` during rolling updates. With only two nodes and required anti-affinity, this lets Kubernetes remove one old pod before scheduling its replacement; the default surge behavior would have no eligible node for a third pod.
-
-The LoadBalancer endpoint is HTTP only. It is suitable for local monitoring and prototype smoke tests, but Azure Static Web Apps is served over HTTPS and browsers block HTTPS-to-HTTP API calls. Configure an HTTPS Ingress and a DNS name before setting `VITE_API_URL` to this backend.
+The frontend is served from the storage account's static website (`https://titipdongst20261023.z45.web.core.windows.net`);
+Static Web Apps is not offered in the regions this subscription allows. The frontend and API are different sites, so
+the refresh cookie still needs one custom parent domain (above).
