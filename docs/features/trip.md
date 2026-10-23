@@ -133,11 +133,11 @@ DESC, id DESC)`.
 
 | Method   | Path                            | operationId       | Auth               | Status | Description                                    |
 | -------- | ------------------------------- | ----------------- | ------------------ | ------ | ---------------------------------------------- |
-| `GET`    | `/trips`                        | `listTrips`       | Public             | Done   | Open trips accepting requests; filter `city`, `from`, `to`; cursor |
+| `GET`    | `/trips`                        | `listTrips`       | Public             | Done   | Open trips accepting requests with a catalog preview; filter `city`, `from`, `to`; cursor |
 | `GET`    | `/trips/{slug}`                 | `getTrip`         | Public             | Done   | Trip detail                                    |
 | `POST`   | `/trips`                        | `createTrip`      | `jastiper`         | Done   | Create a trip                                  |
 | `POST`   | `/trips/{id}/close`             | `closeTrip`       | `jastiper` (owner) | Done   | Stop accepting requests                        |
-| `GET`    | `/me/trips`                     | `listMyTrips`     | `jastiper`         | Done   | The caller's trips                             |
+| `GET`    | `/me/trips`                     | `listMyTrips`     | `jastiper`         | Done   | The caller's trips with a catalog preview      |
 | `PATCH`  | `/trips/{id}`                   | `updateTrip`      | `jastiper` (owner) | Done   | Edit an open trip                              |
 | `POST`   | `/trips/{id}/cancel`            | `cancelTrip`      | `jastiper` (owner) | Done   | Cancel a trip without active orders            |
 | `GET`    | `/trips/{id}/items`             | `listTripItems`   | Public             | Done   | Catalog items in display order                 |
@@ -149,6 +149,11 @@ DESC, id DESC)`.
 (`capacity - reserved_capacity`); `acceptsRequests` is false when no capacity remains, and `listTrips` leaves full
 trips out. `getTrip` embeds the catalog (`items`). `listTrips` filters `from` / `to` (`YYYY-MM-DD`, inclusive) on
 `departsOn`; `to` before `from` returns 422.
+
+`listTrips` and `listMyTrips` add `catalogPreview: { itemCount, items: [{ name, photoUrl }] }` to every trip: the
+first 3 catalog items in display order (`photoUrl` omitted without a photo) and the total item count, loaded for the
+whole page in one query (`ListTripPreviewItems`). A trip without items has `itemCount: 0` and `items: []`. Other trip
+responses leave `catalogPreview` out.
 
 Catalog items: `{ id, name, description, referencePrice, photoUrl, position }` (`description`, `referencePrice`,
 `photoUrl` omitted when empty). `createTripItem` / `updateTripItem` take `name` (1–120, required on create),
@@ -268,5 +273,6 @@ Done:
 - [x] `trip_items` table and catalog CRUD with photos; `getTrip` embeds the catalog.
 - [x] `from` / `to` filters on `listTrips`.
 - [x] `PATCH /trips/{id}` and `POST /trips/{id}/cancel`.
+- [x] `catalogPreview` on `listTrips` and `listMyTrips` (first 3 items and the count, one query per page).
 - [x] Job `trips.close_expired` every 5 minutes (`open` → `closed` after the deadline, `closed` → `completed` after the
       return date with no active order).

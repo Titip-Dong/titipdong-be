@@ -159,21 +159,32 @@ type createTripRequest struct {
 }
 
 type tripResponse struct {
-	ID                 uuid.UUID `json:"id"`
-	Slug               string    `json:"slug"`
-	Title              string    `json:"title"`
-	Description        string    `json:"description"`
-	DestinationCity    string    `json:"destinationCity"`
-	DestinationCountry string    `json:"destinationCountry"`
-	DepartsOn          string    `json:"departsOn" format:"date"`
-	ReturnsOn          string    `json:"returnsOn" format:"date"`
-	RequestDeadline    time.Time `json:"requestDeadline"`
-	Capacity           int       `json:"capacity"`
-	RemainingCapacity  int       `json:"remainingCapacity"`
-	Status             string    `json:"status" enum:"open,closed,completed,cancelled"`
-	AcceptsRequests    bool      `json:"acceptsRequests"`
-	Jastiper           jastiper  `json:"jastiper"`
-	CreatedAt          time.Time `json:"createdAt"`
+	ID                 uuid.UUID       `json:"id"`
+	Slug               string          `json:"slug"`
+	Title              string          `json:"title"`
+	Description        string          `json:"description"`
+	DestinationCity    string          `json:"destinationCity"`
+	DestinationCountry string          `json:"destinationCountry"`
+	DepartsOn          string          `json:"departsOn" format:"date"`
+	ReturnsOn          string          `json:"returnsOn" format:"date"`
+	RequestDeadline    time.Time       `json:"requestDeadline"`
+	Capacity           int             `json:"capacity"`
+	RemainingCapacity  int             `json:"remainingCapacity"`
+	Status             string          `json:"status" enum:"open,closed,completed,cancelled"`
+	AcceptsRequests    bool            `json:"acceptsRequests"`
+	Jastiper           jastiper        `json:"jastiper"`
+	CreatedAt          time.Time       `json:"createdAt"`
+	CatalogPreview     *catalogPreview `json:"catalogPreview,omitempty" doc:"Only in trip lists: the first catalog items and the item count"`
+}
+
+type catalogPreview struct {
+	ItemCount int           `json:"itemCount"`
+	Items     []previewItem `json:"items"`
+}
+
+type previewItem struct {
+	Name     string `json:"name"`
+	PhotoURL string `json:"photoUrl,omitempty" doc:"Signed read URL, valid for one hour"`
 }
 
 type updateTripRequest struct {
@@ -282,7 +293,7 @@ func (h *Handler) list(ctx context.Context, in *struct {
 	if err != nil {
 		return nil, mapError(err)
 	}
-	return &struct{ Body tripPage }{Body: toTripPage(page)}, nil
+	return &struct{ Body tripPage }{Body: h.toTripPage(page)}, nil
 }
 
 func (h *Handler) get(ctx context.Context, in *struct {
@@ -366,7 +377,7 @@ func (h *Handler) listMine(ctx context.Context, in *pageInput) (*struct{ Body tr
 	if err != nil {
 		return nil, mapError(err)
 	}
-	return &struct{ Body tripPage }{Body: toTripPage(page)}, nil
+	return &struct{ Body tripPage }{Body: h.toTripPage(page)}, nil
 }
 
 func (h *Handler) listItems(ctx context.Context, in *struct {
@@ -475,10 +486,16 @@ func mapError(err error) error {
 	return upload.MapError(err)
 }
 
-func toTripPage(p Page) tripPage {
+func (h *Handler) toTripPage(p Page) tripPage {
 	items := make([]tripResponse, len(p.Items))
 	for i, t := range p.Items {
 		items[i] = toTripResponse(t)
+		preview := p.Previews[t.ID]
+		out := catalogPreview{ItemCount: preview.ItemCount, Items: make([]previewItem, len(preview.Items))}
+		for j, it := range preview.Items {
+			out.Items[j] = previewItem{Name: it.Name, PhotoURL: h.photos.ReadURL(it.PhotoKey)}
+		}
+		items[i].CatalogPreview = &out
 	}
 	return tripPage{Items: items, NextCursor: p.NextCursor}
 }
